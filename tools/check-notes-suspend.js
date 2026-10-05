@@ -124,43 +124,60 @@ async function main() {
   /* ---------------- 顽固词判定（leech） ---------------- */
   console.log('\n3) 顽固词清单判定');
   /*
-   * 不依赖数据库里「碰巧」已经有顽固词 —— 自己造一个：
-   * 找一个没学过的词，故意交两次全错的测试，它的 quiz_wrong 就到 2，
-   * 正好越过阈值 2、低于阈值 1000。
-   * 这样这条用例在任意数据库上都能跑，也顺带验证了「错够次数就变顽固词」的真实链路。
+   * 不依赖数据库里「碰巧」已经有顽固词 —— 自己造。
+   *
+   * 做法：交两组**全部答错**的测试（每组 15 题）。词库抽词是随机的，
+   * 两组之间必有重叠的词，那些词 quiz_wrong 就到 2，越过阈值 2。
+   *
+   * ⚠️ 注意必须用**这一组题自己的 wordId**。以前这里为了图省事，
+   * 拿一个有效 session 去报另一个词的 wordId（想精确控制是哪个词变顽固），
+   * 那正好是「后门改任意词排期」这个漏洞的写法 —— 后端现在会拒绝它
+   * （skip 掉、不写库，见 verify-quiz-grading.js 第 8 节）。
    */
   await putJson('/api/settings', { leech_threshold: '2' });
 
-  const freshList = await getJson(`/api/words?book=${BOOK}&status=new&size=5&page=1`);
-  const victim = freshList.items[0];
-  ok(!!victim, '找到一个未学过的词来造顽固词', `id=${victim.id} ${victim.spelling}`);
-
-  /* 同一个词故意错两次，把 quiz_wrong 累积到 2。
-     注意出题接口是随机抽词，不能靠它保证抽到 victim，
-     所以直接拿一个真实的 session 把 victim 的 wordId 报进去（chosen 用一个不可能的 key）。 */
-  for (let i = 0; i < 2; i++) {
-    const quiz = await getJson(`/api/quiz?book=${BOOK}&count=1&type=en2cn`);
-    await postJson('/api/quiz/submit', {
-      bookCode: BOOK,
-      sessionId: quiz.sessionId,
-      answers: [{ index: 0, wordId: victim.id, chosen: 'DEFINITELY-WRONG' }],
+  /*
+   * 抽词是随机的，所以「两组各 15 题必有重叠」这个假设是错的
+   * （3518 词的词库里，15 对 15 的期望重叠只有 0.06 个）。
+   * 改成多轮、每组 50 题，直到出现重叠为止 —— 比死磕一个概率假设稳。
+   */
+  const seen = new Map();          // wordId -> 已经答错几次
+  let rounds = 0;
+  while (rounds < 6 && ![...seen.values()].some((n) => n >= 2)) {
+    rounds++;
+    const quiz = await getJson(`/api/quiz?book=${BOOK}&count=50&type=en2cn`);
+    const answers = quiz.questions.map((q, i) => ({
+      index: i,
+      wordId: q.wordId,               // 必须用这一组题自己的词
+      chosen: 'DEFINITELY-WRONG',     // 不可能匹配，保证判错
+    }));
+    const res = await postJson('/api/quiz/submit', {
+      bookCode: BOOK, sessionId: quiz.sessionId, answers,
     });
+    ok(res.status === 200 && res.data.skipped === 0,
+      `第 ${rounds} 组全部答错已受理（skipped=0）`,
+      `status=${res.status} skipped=${res.data && res.data.skipped}`);
+    for (const q of quiz.questions) seen.set(q.wordId, (seen.get(q.wordId) || 0) + 1);
   }
-  const afterWrong = await getJson(`/api/words/${victim.id}`);
-  ok(afterWrong.progress && afterWrong.progress.quiz_wrong >= 2,
-    '故意答错两次后 quiz_wrong 累积到 2',
-    `quiz_wrong=${afterWrong.progress && afterWrong.progress.quiz_wrong}`);
 
-  const l = await getJson(`/api/quiz/leeches?book=${BOOK}&limit=100`);
+  const twice = [...seen.entries()].filter(([, n]) => n >= 2).map(([id]) => id);
+  ok(twice.length > 0,
+    `有词被答错 ≥2 次（它们会变成顽固词）`,
+    `${rounds} 轮后共 ${twice.length} 个`);
+
+  const l = await getJson(`/api/quiz/leeches?book=${BOOK}&limit=200`);
   ok(l.threshold === 2, '阈值来自设置', `threshold=${l.threshold}`);
   ok(l.total > 0, '阈值 2 能筛出顽固词', `total=${l.total}`);
   ok(l.items.every((x) => x.lapses >= 2), '命中的词 lapses 都 >= 阈值',
-    `min=${Math.min(...l.items.map((x) => x.lapses))}`);
+    `min=${l.items.length ? Math.min(...l.items.map((x) => x.lapses)) : '-'}`);
   const laps = l.items.map((x) => x.lapses);
   ok(JSON.stringify(laps) === JSON.stringify([...laps].sort((a, b) => b - a)),
-    '按 lapses 递减排序', `lapses=${laps.join(',')}`);
+    '按 lapses 递减排序', `lapses=${laps.slice(0, 8).join(',')}${laps.length > 8 ? '…' : ''}`);
   ok(l.items.every((x) => typeof x.note === 'string' && typeof x.suspended === 'number'),
     '每项都带 note / suspended 字段');
+  ok(l.items.some((x) => twice.includes(x.id)),
+    '答错两次以上的词确实出现在顽固词清单里',
+    `应出现 ${twice.length} 个，命中 ${l.items.filter((x) => twice.includes(x.id)).length} 个`);
 
   /*
    * 这一条是回归：`joinBook` 里的 `?` 出现在 WHERE 之前，
@@ -194,11 +211,20 @@ async function main() {
 
   /* ---------------- 今天页的统计 ---------------- */
   console.log('\n5) 今天页统计');
-  const today = await getJson(`/api/study/today?book=${BOOK}`);
+  /*
+   * ⚠️ 这两个数必须**同一时刻**取。
+   * 之前拿的是上面复习测试里的 plan2 快照，中间又跑了一堆会改 due_at 的
+   * 测验作答（答错的词会被排到明天 → 明天不再是「已到期」），
+   * 于是出现 today=105 / plan=106 的假失败 —— 是测试自己的竞态，不是接口的错。
+   */
+  const [today, planNow] = await Promise.all([
+    getJson(`/api/study/today?book=${BOOK}`),
+    getJson(`/api/study/plan?book=${BOOK}&mode=review`),
+  ]);
   ok(today.global && typeof today.global.suspendedWords === 'number',
     'today 暴露了 suspendedWords', `suspendedWords=${today.global.suspendedWords}`);
-  ok(today.pools.dueTotal === plan2.dueNow, 'today.pools.dueTotal 与队列一致',
-    `today=${today.pools.dueTotal} plan=${plan2.dueNow}`);
+  ok(today.pools.dueTotal === planNow.dueNow, 'today.pools.dueTotal 与队列一致（同时刻取值）',
+    `today=${today.pools.dueTotal} plan=${planNow.dueNow}`);
 
   console.log(`\n${'='.repeat(52)}`);
   console.log(`通过 ${pass} 项，失败 ${fail} 项`);

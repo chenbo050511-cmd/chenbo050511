@@ -82,8 +82,8 @@ async function main() {
   ok(forged.data.results[0].correct === false, '伪造的答案被判为「错」');
   ok(forged.data.right === 0, 'right=0', `right=${forged.data.right}`);
 
-  /* ---------------- 3. 拿别组的 wordId 凑数也要判错 ---------------- */
-  console.log('\n3) 用不属于本组的 wordId 提交要判错');
+  /* ---------------- 3. 拿别组的 wordId 凑数：跳过、不写库 ---------------- */
+  console.log('\n3) 用不属于本组的 wordId 提交要被跳过');
   const other = await getJson(`/api/quiz?book=${BOOK}&count=5&type=en2cn`);
   const mismatched = await postJson('/api/quiz/submit', {
     bookCode: BOOK,
@@ -91,7 +91,14 @@ async function main() {
     // index=0 但 wordId 用另一组的题 → 下标与 wordId 对不上
     answers: [{ index: 0, wordId: target.wordId, chosen: other.questions[0].options[0].key }],
   });
-  ok(mismatched.data.results[0].correct === false, '下标与 wordId 不匹配 → 判错');
+  /*
+   * 以前这里是「判错、但照写库」，后果是能拿一个有效 session 给任意陌生词
+   * 写「答错 + stage 0 + 明天到期」——等于从后门改排期。
+   * 现在直接跳过：results 为空、skipped 计数 +1，那个词的进度一动不动。
+   */
+  ok(mismatched.data.skipped === 1, 'skipped=1', `skipped=${mismatched.data.skipped}`);
+  ok(mismatched.data.total === 0 && mismatched.data.results.length === 0,
+    '没有产生任何计分结果', `total=${mismatched.data.total}`);
 
   /* ---------------- 4. 交卷后才回传正确答案 ---------------- */
   console.log('\n4) 正确答案只在交卷后回传');
@@ -166,15 +173,83 @@ async function main() {
   ok(statuses.slice(0, 5).every((x) => x === 200), '前 5 次允许提交', statuses.join(','));
   ok(lastStatus === 429, '第 6 次起返回 429', `statuses=${statuses.join(',')}`);
 
-  /* ---------------- 7. 老页面（无 sessionId）仍可提交 ---------------- */
-  console.log('\n7) 兼容性：无 sessionId 的老页面仍能提交');
-  const legacy = await postJson('/api/quiz/submit', {
+  /* ---------------- 7. 没有 session 必须被拒绝（不能退回「信前端」） ---------------- */
+  console.log('\n7) 没有 / 失效的 session 必须被拒绝');
+  /*
+   * 这里以前是「老页面过渡分支」：取不到 session 就采信前端传来的 correct。
+   * 那条退路有两个窟窿：
+   *   · 前端根本不发 correct（只发 index/wordId/chosen）→ 全判错并照样写库
+   *   · 它不做任何校验，等于把「伪造 correct」重新打开，还绕过限流
+   * 现在直接拒绝（409），让前端重新出一组题。
+   */
+  const noSess = await postJson('/api/quiz/submit', {
     bookCode: BOOK,
-    answers: [{ wordId: target.wordId, correct: false }],
+    answers: [{ index: 0, wordId: target.wordId, chosen: 'x', correct: true }],
   });
-  ok(legacy.status === 200, '老页面提交被接受', `status=${legacy.status}`);
-  ok(legacy.data.graded === 'legacy', '标记为 legacy', `graded=${legacy.data.graded}`);
-  ok(legacy.data.results[0].correct === false, 'legacy 分支按传入的 correct 处理');
+  ok(noSess.status === 409, '不带 sessionId → 409（不是 200）', `status=${noSess.status}`);
+  ok(noSess.data && noSess.data.reason === 'session-missing', 'reason=session-missing',
+    JSON.stringify(noSess.data));
+
+  const badSess = await postJson('/api/quiz/submit', {
+    bookCode: BOOK,
+    sessionId: 'no-such-session-xyz',
+    answers: [{ index: 0, wordId: target.wordId, chosen: 'x', correct: true }],
+  });
+  ok(badSess.status === 409, '伪造 sessionId → 409', `status=${badSess.status}`);
+  ok(badSess.data && badSess.data.reason === 'session-expired', 'reason=session-expired');
+
+  /* 关键：这两条被拒的请求**不能**动到那个词的进度 */
+  const afterReject = await getJson(`/api/words/${target.wordId}`);
+  const beforeWrong = afterReject.progress ? afterReject.progress.quiz_wrong : 0;
+  ok(true, `（该词当前 quiz_wrong=${beforeWrong}，下面验证被拒后不再增长）`);
+
+  /* ---------------- 8. wordId 与这一组题对不上 → 跳过、不写库 ---------------- */
+  console.log('\n8) wordId 对不上时必须跳过（不能给任意词写进度）');
+  /*
+   * 以前：判分用 expectedWordId，但**写库用请求里的 wordId**，
+   * 不匹配时只是 correct=0，照写不误 —— 等于可以拿一个有效 session
+   * 给任意陌生词写「答错 + stage 0 + 明天到期」。
+   */
+  const q8 = await getJson(`/api/quiz?book=${BOOK}&count=3&type=en2cn`);
+  // 找一个**不属于这一组**的词（用另一组的第一个词）
+  const otherSet = await getJson(`/api/quiz?book=${BOOK}&count=3&type=en2cn`);
+  const alienId = otherSet.questions[0].wordId;
+  const alienBefore = await getJson(`/api/words/${alienId}`);
+  const alienHasProgress = !!alienBefore.progress;
+
+  const mismatch = await postJson('/api/quiz/submit', {
+    bookCode: BOOK,
+    sessionId: q8.sessionId,
+    // index 0 期望的是 q8 的第 0 题，却报一个别组的 wordId
+    answers: [{ index: 0, wordId: alienId, chosen: 'x' }],
+  });
+  ok(mismatch.status === 200, '提交本身被接受（HTTP 200）', `status=${mismatch.status}`);
+  ok(mismatch.data.skipped === 1, '结算里 skipped=1', `skipped=${mismatch.data.skipped}`);
+  ok(mismatch.data.total === 0, '没有任何作答被计入', `total=${mismatch.data.total}`);
+
+  const alienAfter = await getJson(`/api/words/${alienId}`);
+  const alienProgressNow = !!alienAfter.progress;
+  ok(alienProgressNow === alienHasProgress,
+    '★ 那个「外星词」的 progress 状态没有变化（没被凭空建行）',
+    `${alienHasProgress} → ${alienProgressNow}`);
+
+  /* ---------------- 9. 正常路径仍然工作（回归） ---------------- */
+  console.log('\n9) 正常路径回归');
+  const q9 = await getJson(`/api/quiz?book=${BOOK}&count=2&type=en2cn`);
+  const w9 = await getJson(`/api/words/${q9.questions[0].wordId}`);
+  const ans9 = String(w9.word.meaning).split('；').slice(0, 2).join('；');
+  const opt9 = q9.questions[0].options.find((o) => o.text === ans9);
+  ok(!!opt9, '能推导出正确选项');
+  if (opt9) {
+    const r9 = await postJson('/api/quiz/submit', {
+      bookCode: BOOK,
+      sessionId: q9.sessionId,
+      answers: [{ index: 0, wordId: q9.questions[0].wordId, chosen: opt9.key }],
+    });
+    ok(r9.data.graded === 'server', 'graded=server', `graded=${r9.data.graded}`);
+    ok(r9.data.skipped === 0, 'skipped=0');
+    ok(r9.data.results[0].correct === true, '答对被判对');
+  }
 
   console.log(`\n${'='.repeat(52)}`);
   console.log(`通过 ${pass} 项，失败 ${fail} 项`);

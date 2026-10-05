@@ -275,6 +275,40 @@
 
   /* ----------------------------- 结算 ----------------------------- */
 
+  /**
+   * 成绩没能落库时的提示。
+   *
+   * 这里**不猜对错**：判分只认服务端，所以服务端不受理时我们只能说
+   * 「这次没能记录」。以前会显示成「你全错了」，用户会以为考砸了，
+   * 实际上成绩压根没进数据库、排期也没动。
+   */
+  function paintSaveFailed(message) {
+    const n = state.answered.length;
+    root().innerHTML = `
+      <div class="card pad-lg quiz-result">
+        <div class="em-ico" style="background:var(--warn-soft);color:var(--warn);margin:0 auto 14px">
+          ${U.icon('x', 'ico')}
+        </div>
+        <h3 style="margin-bottom:6px">这次成绩没能记录</h3>
+        <p style="color:var(--text-dim);font-size:13.5px;line-height:1.7;max-width:460px;margin:0 auto">
+          你已经答了 <b>${n}</b> 题，但服务端没有受理这次提交，
+          所以<b>对错没有计入，复习排期也没有改动</b>。
+          ${message ? `<br><span style="color:var(--text-mute);font-size:12.5px">原因：${U.esc(message)}</span>` : ''}
+        </p>
+        <p style="color:var(--text-mute);font-size:12.5px;margin-top:12px">
+          常见原因：出题之后服务重启过，或者放着超过了 2 小时（这组题的答案已经失效）。
+          重新出一组题就好，<b>不会重复计分</b>。
+        </p>
+        <div class="row" style="justify-content:center;gap:10px;margin-top:20px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="retry-set">${U.icon('refresh')} 重新出一组</button>
+          <button class="btn" id="back-today">${U.icon('arrowLeft')} 回今日</button>
+        </div>
+      </div>`;
+
+    document.getElementById('retry-set').addEventListener('click', () => { reset(); paintSetup(); });
+    document.getElementById('back-today').addEventListener('click', () => window.App.go('#/today'));
+  }
+
   async function finish() {
     if (keyHandler) { document.removeEventListener('keydown', keyHandler); keyHandler = null; }
     state.phase = 'result';
@@ -286,6 +320,7 @@
     }
 
     let data = null;
+    let saveError = '';
     try {
       data = await API.submitQuiz(
         state.bookCode,
@@ -294,23 +329,30 @@
         state.sessionId
       );
     } catch (err) {
-      U.toast('成绩保存失败：' + err.message, 'bad');
+      saveError = err.message || '未知错误';
+      U.toast('成绩保存失败：' + saveError, 'bad');
+    }
+
+    /* 服务端拒绝受理（会话失效 / 重复提交）时，**不要**在这里自己判分。
+       以前这里会把没回填的题一律当答错，于是「服务重启过」这种情况
+       会显示成「你全错了」，而实际成绩根本没被记录 —— 用户以为考砸了。 */
+    const graded = !!(data && data.graded === 'server' && Array.isArray(data.results));
+    if (!graded) {
+      return paintSaveFailed(saveError);
     }
 
     /* 用服务端回传的结果回填每一题的对错与正确答案。
        服务端会给出 correctKey（正确答案是哪个选项），
        前端再从自己的题目数据里把它翻成文字 —— 答题过程中前端是没有这份信息的。 */
-    if (data && Array.isArray(data.results)) {
-      data.results.forEach((r) => {
-        const a = answered.find((x) => x.index === r.index);
-        if (!a) return;
-        a.correct = !!r.correct;
-        const q = state.questions[r.index];
-        const opt = q && q.options.find((o) => o.key === r.correctKey);
-        a.answer = opt ? opt.text : '';
-      });
-    }
-    // 没被回填的（理论上不该有）按答错处理，别显示成「未判定」
+    data.results.forEach((r) => {
+      const a = answered.find((x) => x.index === r.index);
+      if (!a) return;
+      a.correct = !!r.correct;
+      const q = state.questions[r.index];
+      const opt = q && q.options.find((o) => o.key === r.correctKey);
+      a.answer = opt ? opt.text : '';
+    });
+    // 没被回填的按答错显示（正常情况下不该出现）
     answered.forEach((a) => { if (a.correct === null) a.correct = false; });
 
     const total = answered.length;

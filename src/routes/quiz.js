@@ -211,10 +211,15 @@ router.get(
  * 提交测试结果。
  *
  * 判分完全由服务端做：前端只提交「选了哪个 key」（`chosen`），
- * 服务端拿 session 里存的正确答案比对。前端传来的 `correct` 字段**一律忽略**。
+ * 服务端拿 session 里存的正确答案比对。
  *
- * 兼容性：老页面（没有 sessionId）会退回旧行为 —— 采信 `correct`。
- * 这条分支没有防重放保护，所以只作为过渡；刷新页面后就会走安全路径。
+ * 这里**不再有**「取不到 session 就信前端」的退路 —— 那条退路曾经有两个窟窿：
+ *   1. 前端根本不发 `correct`（它只发 index/wordId/chosen），所以 `a.correct`
+ *      是 undefined → **答对的题全被判错**，而且照样写库、照样改排期。
+ *   2. 那条分支不做 session 校验，等于把「伪造 correct」这扇门重新打开，
+ *      连重复提交限流也一起绕过了。
+ * session 是内存态（服务重启 / 2 小时 TTL / 超过 40 组都会丢），所以这很常见。
+ * 现在取不到就直接拒绝，让前端重新出一组题 —— 宁可报错，不要静默写错数据。
  */
 router.post(
   '/submit',
@@ -225,41 +230,50 @@ router.post(
 
     const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId : '';
     const session = sessionId ? sessions.get(sessionId) : null;
-
-    // 会话在、但已经交过很多次 → 判定为重复提交（脚本刷流水）
-    if (session) {
-      const now = Date.now();
-      session.submits = session.submits.filter((t) => now - t < SUBMIT_WINDOW_MS);
-      if (session.submits.length >= SUBMIT_MAX) {
-        return res.status(429).json({ error: '这一组题已经提交过了，请重新出一组' });
-      }
-      session.submits.push(now);
+    if (!session) {
+      // 没有会话 = 这一组题的答案已经无从校验。拒绝，别猜。
+      return res.status(409).json({
+        error: '这组题已失效（服务重启过或放置过久），请重新出一组',
+        reason: sessionId ? 'session-expired' : 'session-missing',
+      });
     }
 
+    // 会话在、但已经交过很多次 → 判定为重复提交（脚本刷流水）
+    const now = Date.now();
+    session.submits = session.submits.filter((t) => now - t < SUBMIT_WINDOW_MS);
+    if (session.submits.length >= SUBMIT_MAX) {
+      return res.status(429).json({ error: '这一组题已经提交过了，请重新出一组' });
+    }
+    session.submits.push(now);
+
     const results = [];
+    let skipped = 0;
     db.transaction(() => {
       for (let i = 0; i < answers.length; i++) {
         const a = answers[i];
         const wordId = int(a.wordId, 0, 1);
-        const word = db.queryOne('SELECT id, spelling, meaning FROM words WHERE id = ?', [wordId]);
-        if (!word) continue;
 
-        /* ---- 判分：服务端说了算 ---- */
-        let correct;
-        let correctKey = '';
-        const chosenKey = typeof a.chosen === 'string' ? a.chosen : '';
         /* 前端带上题目下标（中途交卷时数组会短于题目数，靠下标才对得准）。
            没带就按数组位置兜底。 */
         const qIndex = Number.isInteger(a.index) && a.index >= 0 ? a.index : i;
-        if (session) {
-          // 作答必须属于这一组题，且下标要对得上（防止拿别处的 wordId 凑数）
-          const expectedWordId = session.wordIds[qIndex];
-          correctKey = session.keys[qIndex] || '';
-          correct = (expectedWordId === wordId && chosenKey && chosenKey === correctKey) ? 1 : 0;
-        } else {
-          // 老页面过渡分支
-          correct = a.correct ? 1 : 0;
-        }
+        const expectedWordId = session.wordIds[qIndex];
+        const correctKey = session.keys[qIndex] || '';
+
+        /*
+         * 作答的 wordId 必须和这一组题里该下标的词**完全一致**。
+         * 不一致就跳过、不写库 —— 以前是「只是判错、照写不误」，
+         * 于是可以拿一个有效 session 去给任意陌生的词写
+         * 「答错 + stage 0 + 明天到期」，等于从后门改别人的排期。
+         * 这同时也是前端 index/wordId 错位时的安全阀（宁可不记，不要记错）。
+         */
+        if (expectedWordId !== wordId) { skipped++; continue; }
+
+        const word = db.queryOne('SELECT id, spelling, meaning FROM words WHERE id = ?', [wordId]);
+        if (!word) { skipped++; continue; }
+
+        /* ---- 判分：服务端说了算 ---- */
+        const chosenKey = typeof a.chosen === 'string' ? a.chosen : '';
+        const correct = (chosenKey && chosenKey === correctKey) ? 1 : 0;
 
         const prev = getProgress(wordId);
         const rating = correct ? 'known' : 'unknown';
@@ -299,7 +313,10 @@ router.post(
       accuracy: results.length ? Math.round((right / results.length) * 100) : 0,
       mistakes: results.filter((r) => !r.correct),
       results,
-      graded: session ? 'server' : 'legacy',
+      // 判分一律来自服务端（已经没有「信前端」的退路了）
+      graded: 'server',
+      // 被跳过的作答数：wordId 与这一组题对不上（前端错位或有人构造请求）
+      skipped,
     });
   })
 );
