@@ -178,7 +178,7 @@
     font-weight: 500;
     text-align: left;
     width: 100%;
-    border-radius: 10px;
+    border-radius: var(--r-md);
     min-height: 48px;
     position: relative;
   }
@@ -240,7 +240,7 @@
   .setting-row .s-ctrl .input, .setting-row .s-ctrl .select { width: 100%; min-width: 0; }
 
   --- 抽屉 --- */
-  .drawer { width: 100%; padding: 18px; border-radius: 18px 18px 0 0; top: auto; bottom: 0; right: 0; left: 0; max-height: 85vh; }
+  .drawer { width: 100%; padding: 18px; border-radius: var(--r-lg) var(--r-lg) 0 0; top: auto; bottom: 0; right: 0; left: 0; max-height: 85vh; }
 
   --- Toast --- */
   .toasts { bottom: 78px; padding: 0 16px; }
@@ -395,7 +395,7 @@
     min-width: 36px;
     height: 36px;
     font-size: 13px;
-    border-radius: 10px;
+    border-radius: var(--r-sm);
   }
 
   /* 答题进度条 */
@@ -948,7 +948,8 @@
   .exam-answer-panel #ex-submit2 {
     padding: 8px 20px;
     font-size: 13px;
-    border-radius: 20px;
+    /* 规范：按钮用 --r-sm，不要到处用胶囊形（原先这里是 20px） */
+    border-radius: var(--r-sm);
     background: var(--accent);
     color: #fff;   /* 实心主色底上的白字 */
     border: none;
