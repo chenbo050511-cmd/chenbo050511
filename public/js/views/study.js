@@ -5,13 +5,18 @@
  *   #/review  mode='review' 复习：只取到期的词，批内按错误次数从多到少排
  *
  * 过关规则（两种模式一致）：
- *   第一次就「认识」＝一遍就过；
- *   第一次「不认识」或「模糊」＝错词，插回队列隔 3~5 张再考，**连对 3 次**才算过关。
- *   认识 / 模糊都算答对（模糊只是代表下次间隔推进得少），不认识则连对清零。
+ *   点「认识」或「模糊」＝过关（认识 → 下次间隔大步推进；模糊 → 只推一档）；
+ *   点「不认识」＝错词，把它在队列里**搬家**、隔 3~5 张再考，直到点会为止。
+ *
+ * 排期走三阶段协议（服务端 /api/study/answer 的 phase 参数）：
+ *   first  本轮第一次作答 —— 只记流水，**不排期**
+ *   repeat 本轮重复作答   —— 只记流水，不进正确率、不进打卡
+ *   pass   本轮过关       —— 这时候才按**第一次作答**的质量排期
+ * 为什么要延到过关才排期：不认识的词会被重复到会为止，如果第一次不认识就
+ * 打回阶段 0，那「重复到会了」这件事就白费了。
  *
  * 关于统计：
- *   正确率只记「第一次作答」，重复作答与过关归档都不计入（后端按 mode 区分）。
- *   重复次数单独累计，结束时展示。
+ *   正确率只记「第一次作答」（与服务端口径一致），重复作答单独累计并在批次结束时展示。
  */
 (function () {
   'use strict';
@@ -20,13 +25,15 @@
 
   /** 路由名 → 模式。同一个视图挂两个路由 */
   const MODE_OF = { study: 'new', review: 'review' };
-  const PASS_STREAK = 3;        // **错词**要连对几次才算过关（认识的一遍就过）
-  const GAP_MIN = 3;            // 重复时至少隔几张
+  const GAP_MIN = 3;            // 错词搬回队列时至少隔几张
   const GAP_MAX = 5;            // 最多隔几张
+
+  /** 反馈值 → 中文，用于「首次是『不认识』」这类提示 */
+  const RATING_CN = { known: '认识', vague: '模糊', unknown: '不认识' };
 
   const state = {
     mode: 'new',
-    cards: [],                  // 本批卡片，每张带 _streak / _first / _repeats / _done
+    cards: [],                  // 本批卡片，每张带 _seq / _first / _repeats / _done / _archived
     idx: 0,
     flipped: false,
     busy: false,
@@ -145,14 +152,22 @@
     await load();
   }
 
-  /** 给一批原始词条挂上本轮需要的临时状态 */
+  /**
+   * 给一批原始词条挂上本轮需要的临时状态。
+   *
+   * 注意 `_done` / `_repeats` / `_archived` 都挂在**卡片对象**上，
+   * 而队列里每个词只会有一个对象（见 repel()），所以不需要额外的副本管理。
+   */
+  let seqCounter = 0;
   function decorate(words) {
+    seqCounter = 0;
     return (words || []).map((w) => ({
       ...w,
-      _streak: 0,     // 连续答对次数（错词要连对 PASS_STREAK 次才过关）
-      _first: null,   // 第一次作答的选择
-      _repeats: 0,    // 这张卡本轮被考了几次
-      _done: false,   // 是否已过关
+      _seq: ++seqCounter,   // 首次进入本轮的顺序号，用于「本批 N / M」的稳定显示
+      _first: null,         // 第一次作答的选择
+      _repeats: 0,          // 这个词本轮被重复考了几次（不含第一次）
+      _done: false,         // 是否已过关
+      _archived: false,     // 过关结果是否已经提交给服务端（防止重复归档）
     }));
   }
 
@@ -250,53 +265,109 @@
     }
   }
 
+  /**
+   * 本轮重复：把同一个对象在队列里**搬家**，而不是复制一份。
+   *
+   * 以前是 `splice(idx + gap, 0, w)` —— 插进去的**和当前这张是同一个对象引用**。
+   * 由于 `_done` 挂在那个对象上，等轮到副本时它已经是「已过关」，
+   * 而 `paint()` 又不会跳过已过关的卡，于是：
+   *   · 一个词被要求作答 3 次
+   *   · `unknown_count` 被多计（它是顽固词阈值和复习队列排序的输入）
+   *   · 多出一条流水
+   * 实测呈现顺序变成 A → A → B → C → D → A[已过关] → E（5 个词显示成 6 个）。
+   *
+   * 正确做法：先把它从当前位置**摘掉**，再插到后面 —— 队列里始终只有一份。
+   * 这样 `state.idx` 不用动（摘掉之后，原来的下标自然指向下一张卡）。
+   */
+  function repel(w, gap) {
+    const from = state.cards.indexOf(w);
+    if (from < 0) return;
+    state.cards.splice(from, 1);
+    // 摘掉之后后面的元素整体前移 1 位，所以要减 1 才是原来的相对距离
+    const to = Math.max(from + 1, Math.min(from + gap - 1, state.cards.length));
+    state.cards.splice(to, 0, w);
+  }
+
+  /**
+   * 前进到下一张「还没过关」的卡。
+   *
+   * 用 while 跳过已过关的卡，而不是简单 `idx++` —— 搬家之后队列顺序会变，
+   * 靠计数前进迟早会撞上已过关的卡（那正是以前「已过关的卡又出现一次」的原因）。
+   */
+  function nextCard() {
+    while (state.idx < state.cards.length && state.cards[state.idx]._done) state.idx += 1;
+    return state.idx < state.cards.length;
+  }
+
   async function grade(g) {
     const w = current();
-    if (!w || state.busy) return;
+    if (!w || state.busy || w._done) return;
     state.busy = true;
 
-    const isNew = state.mode === 'new';
     const isKnown = g === 'known';
     const isVague = g === 'vague';
 
-    // 第一次作答记录
-    if (w._first === null) {
-      w._first = g;
+    /*
+     * 三阶段协议（服务端 src/routes/study.js 的 /answer 已经实现好了）：
+     *   first   —— 这个词本轮的**第一次**作答。只记流水，**不排期**。
+     *   repeat  —— 本轮里的重复作答。只记流水，不进正确率、不进打卡。
+     *   pass    —— 本轮过关。这时候才按「第一次作答」的质量排期。
+     *
+     * 为什么要延到过关才排期（这是原设计，不是新加的）：
+     *   不认识的词会被重复到会为止。如果第一次不认识就打回阶段 0，
+     *   那「重复到会了」这件事就白费了。
+     *
+     * 以前前端固定发 'legacy'，于是服务端的 first/repeat 分支全是死代码，
+     * 连带三个后果：每次点反馈都排期一次、重复作答也算进正确率、
+     * 「今日已复习」因为只认 card_done 而**恒为 0**。
+     */
+    const isFirst = w._first === null;
+    if (isFirst) w._first = g;
+    else w._repeats += 1;
+
+    // 识别 → 过关；不认识 → 插回队列隔 3~5 张再考
+    if (isKnown || isVague) w._done = true;
+
+    // 提交作答
+    try {
+      if (isFirst) {
+        await API.answer(w.id, g, state.bookCode, 'first', g);
+      } else {
+        await API.answer(w.id, g, state.bookCode, 'repeat', w._first);
+      }
+    } catch (e) { /* 静默：网络抖动不该打断学习，过关时还会再提交一次 */ }
+
+    // 过关归档：只有这里才真正排期
+    if (w._done && !w._archived) {
+      w._archived = true;
+      try {
+        await API.answer(w.id, g, state.bookCode, 'pass', w._first);
+      } catch (e) { /* 静默 */ }
+    }
+
+    // 本轮统计（正确率口径 = 只看第一次作答，与服务端一致）
+    if (isFirst) {
       state.stats.firstKnown += (isKnown ? 1 : 0);
       state.stats.firstVague += (isVague ? 1 : 0);
       state.stats.firstUnknown += (!isKnown && !isVague ? 1 : 0);
       state.stats.words += 1;
-    }
-    state.stats.repeats += 1;
-
-    // 认识 / 模糊直接过关；不认识要连对 3 次
-    if (isKnown || isVague) {
-      w._done = true;
-      w._streak = 0;
     } else {
-      w._streak = 0; // 不认识清零
-      // 插回队列
-      const gap = Math.min(GAP_MAX, GAP_MIN + Math.floor(Math.random() * 3));
-      state.cards.splice(state.idx + gap, 0, w);
+      state.stats.repeats += 1;
     }
 
-    // 提交作答
-    try {
-      await API.answer(w.id, g, state.bookCode, 'legacy', w._first || g);
-    } catch (e) { /* 静默 */ }
+    if (!w._done) {
+      const gap = Math.min(GAP_MAX, GAP_MIN + Math.floor(Math.random() * 3));
+      repel(w, gap);
+    }
 
-    // 显示反馈
-    showFeedback(w, isKnown || isVague);
+    showFeedback(w, g);
 
-    // 下一张
     setTimeout(() => {
       state.busy = false;
-      if (w._done) {
-        state.idx++;
-        if (state.idx >= state.cards.length) {
-          paintBatchDone(document.getElementById('progress'), document.getElementById('counter'));
-          return;
-        }
+      if (w._done) nextCard();
+      if (state.idx >= state.cards.length) {
+        paintBatchDone(document.getElementById('progress'), document.getElementById('counter'));
+        return;
       }
       state.flipped = false;
       paint();
@@ -349,15 +420,21 @@
 
     const w = current();
     const total = cards.length;
-    const done = cards.filter((c) => c._done).length;
+
+    /*
+     * 进度用 `_seq`（首次进入本轮的顺序号）算，而不是 `idx` 或「已完成数」——
+     * 错词会被搬到队列后面，按位置算的话进度条会来回跳。
+     * `_seq` 在 decorate() 里递增分配，是稳定的。
+     */
+    const seen = cards.filter((c) => c._seq <= w._seq).length;
     const isNew = state.mode === 'new';
 
     counter.innerHTML = `
-      <span>本批 <b>${Math.min(done + 1, total)}</b> / ${total}</span>
+      <span>本批 <b>${Math.min(seen, total)}</b> / ${total}</span>
       <span class="sep">·</span>
       <span>${isNew ? `第 ${state.batchNo} 批新词` : '复习'}</span>
-      ${w._repeats || w._streak ? `<span class="sep">·</span>
-        <span>${w._streak ? `连对 ${w._streak}/${PASS_STREAK}` : `重复第 ${w._repeats} 次`}</span>` : ''}
+      ${w._repeats ? `<span class="sep">·</span>
+        <span>重复第 ${w._repeats} 次</span>` : ''}
     `;
     prog.style.width = `${(done / total) * 100}%`;
     var gradeRow = document.getElementById("grade-row");
@@ -394,7 +471,7 @@
         ${w.pos.split(' ').map((p) => `<span class="chip pos">${U.esc(p)}</span>`).join('')}
       </div>` : ''}
       ${w._repeats ? `<div class="chip" style="background:var(--warn-soft);border-color:transparent;color:var(--warn)">
-        再考一次 · 已重复 ${w._repeats} 次${w._streak ? ` · 连对 ${w._streak}/${PASS_STREAK}` : ''}
+        再考一次 · 已重复 ${w._repeats} 次${w._first ? ` · 首次是「${RATING_CN[w._first] || w._first}」` : ''}
       </div>` : ''}
       <div class="flip-hint">点击卡片或按 <kbd>空格</kbd> 查看释义</div>
     `;
@@ -704,8 +781,26 @@
     }
   }
 
-  /** 作答后的轻量反馈（居中一闪，不打断节奏） */
-  function showFeedback(w, passed) {
+  /**
+   * 作答后的轻量反馈（居中一闪，不打断节奏）。
+   *
+   * 三档各自的**实际后果**必须说实话 —— 反馈是用户判断「刚才那一下算什么」的唯一依据：
+   *   known   → 过关，间隔大步推进
+   *   vague   → 过关，但后端按「不认识」处理 → 明天再来（所以不能说成「已掌握」）
+   *   unknown → 不过关，插回队列再考
+   *
+   * 以前这里只传一个布尔 passed，导致「模糊」和「认识」都显示绿色「✓ 已掌握」，
+   * 而同一次点击落库的是 stage=0 + 明天复习 + vague_count+1（记账词、参与顽固词判定）。
+   * 用户看到的和实际发生的完全相反。
+   */
+  function showFeedback(w, rating) {
+    const STYLE = {
+      known: { bg: '#10b981', text: '✓ 记住了' },
+      vague: { bg: '#f59e0b', text: '～ 有点模糊 · 明天再来' },
+      unknown: { bg: '#f43f5e', text: '✗ 不认识 · 稍后再考' },
+    };
+    const cfg = STYLE[rating] || STYLE.unknown;
+
     const toast = document.createElement('div');
     toast.className = 'srs-toast';
     toast.style.cssText = `
@@ -718,12 +813,12 @@
       font-size: 14px;
       font-weight: 500;
       color: #fff;
-      background: ${passed ? '#10b981' : '#f59e0b'};
+      background: ${cfg.bg};
       z-index: 1000;
       pointer-events: none;
       animation: fadeInOut 0.5s ease;
     `;
-    toast.textContent = passed ? '✓ 已掌握' : '继续努力';
+    toast.textContent = cfg.text;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 600);
   }

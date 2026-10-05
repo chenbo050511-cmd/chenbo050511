@@ -27,6 +27,7 @@ const OFFLINE_TESTS = [
 /** 需要服务的检查 */
 const ONLINE_TESTS = [
   { name: '口径一致性（未学/已学/到期 三套判定）', args: ['tools/check-consistency.js', BASE, 'kaoyan'] },
+  { name: '三阶段协议（first/repeat/pass）', args: ['tools/check-study-phases.js', BASE, 'cet4'] },
   { name: '判分安全性（伪造 correct / 跨组借用 / 限流）', args: ['tools/verify-quiz-grading.js', BASE, 'cet4'] },
   { name: '笔记 / 暂缓 / 顽固词', args: ['tools/check-notes-suspend.js', BASE, 'cet4'] },
   { name: '新词存活（写标记后不消失）', args: ['tools/check-new-word-survival.js', BASE, 'cet4'] },

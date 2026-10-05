@@ -9,6 +9,55 @@ const { wrap, int, dayStartIso, todayStr, saveProgress, logStudy, getProgress, l
 
 const router = express.Router();
 
+/* ------------------------------------------------------------------ */
+/* 本轮「第一次作答」的服务端记录                                       */
+/* ------------------------------------------------------------------ */
+/*
+ * 三阶段协议里，排期只按**第一次作答的质量**算，所以那个质量必须由服务端
+ * 自己记着 —— 不能采信前端在 pass 时回传的 `firstRating`。
+ *
+ * 理由和 quiz 那边一样：只要有一个值由前端提供，就存在「改一个数就改排期」
+ * 的口子，而且前端一旦把字段拼错，排期会**静默**按错误的质量算。
+ *
+ * 这里只存「本轮第一次点了什么」，过关（pass）时读出来用、然后删掉。
+ * 内存态即可：服务重启最坏结果是「这个词本轮的成绩算不进去」，
+ * 不会损坏任何已落库的数据。
+ */
+const FIRST_TTL_MS = 6 * 60 * 60 * 1000;   // 一轮学习跨不过 6 小时
+const FIRST_MAX = 5000;                     // 上限，防止长期运行无界增长
+/** wordId -> { rating, at } */
+const firstRatings = new Map();
+
+function rememberFirst(wordId, rating) {
+  firstRatings.set(wordId, { rating, at: Date.now() });
+  if (firstRatings.size > FIRST_MAX) {
+    // 先清过期的，还不够就按插入顺序丢最旧的
+    const now = Date.now();
+    for (const [id, v] of firstRatings) {
+      if (now - v.at > FIRST_TTL_MS) firstRatings.delete(id);
+    }
+    while (firstRatings.size > FIRST_MAX) {
+      firstRatings.delete(firstRatings.keys().next().value);
+    }
+  }
+}
+
+/**
+ * 取出并**消费**某个词的本轮首答记录。
+ *
+ * 必须先 delete 再返回 —— 这个记录是一次性的：
+ * 过关（pass）读走它之后，同一个词就不该再排一次期。
+ * 曾经写成「先判过期、再返回」，正常路径下忘了 delete，结果第一次 pass
+ * 之后记录还在，**同一个词可以被无限次重新排期**（实测 reps 一路 5→6→7…）。
+ */
+function takeFirst(wordId) {
+  const hit = firstRatings.get(wordId);
+  if (!hit) return null;
+  firstRatings.delete(wordId);          // 无论是否过期都要取走
+  if (Date.now() - hit.at > FIRST_TTL_MS) return null;
+  return hit.rating;
+}
+
 const WORD_COLS = `w.id, w.spelling, w.phonetic, w.pos, w.meaning, w.meaning_alt,
                    w.definition, w.exchange, w.collins, w.oxford, w.frq,
                    bw.unit_id, u.name AS unit_name`;
@@ -266,21 +315,26 @@ router.get(
 
 
 /**
- * 卡片作答。分三个阶段提交（前端驱动）：
+ * 卡片作答。分三个阶段提交（前端驱动，见 public/js/views/study.js 的 grade()）：
  *
  *   phase = 'first'   对这个词的**第一次**作答
- *                     → 只记流水（mode=card，计入正确率），**不立刻排期**
+ *                     → 只记流水（mode=card，计入正确率），**不排期**；
+ *                       同时把「第一次点了什么」记到服务端（rememberFirst）
  *   phase = 'repeat'  本轮里重复出现的作答
  *                     → 只记流水（mode=card_repeat），不进打卡、不进正确率
- *   phase = 'pass'    本轮过关（连续答对 2 次）
- *                     → 这时候才按「第一次作答」的质量定下次复习时间
+ *   phase = 'pass'    本轮过关
+ *                     → 这时候才按**服务端记录的首次作答质量**排期
  *
  * 为什么要延到 pass 才排期：
  *   不认识的词会被重复到会为止，如果第一次不认识就把它打回阶段 0，
  *   那「重复到会了」这件事就白费了。所以等到过关再排期，并且——
  *   首次是「不认识」但最终过关的，按「认识」正常推进一档。
  *
- * phase 缺省时走旧版逻辑（记流水 + 立刻排期），兼容没刷新的页面。
+ * pass 时**不采信**前端回传的 firstRating（那会变成又一个「前端说了算」的
+ * 口子，且前端拼错字段会静默按错误质量排期）。取不到服务端记录就 409 让前端重来。
+ *
+ * phase 缺省（'legacy'）时走旧版逻辑：记流水 + 立刻排期，firstRating 取自请求体。
+ * 这条只用于兼容没刷新的老页面。
  */
 router.post(
   '/answer',
@@ -311,17 +365,42 @@ router.post(
       return res.json({ phase, wordId, spelling: word.spelling, recorded: 'repeat' });
     }
 
-    /* ---------- 首次作答：记流水，排期后延 ---------- */
+    /* ---------- 首次作答：记流水 + 存下质量，排期后延 ---------- */
     if (phase === 'first') {
       if (!srs.RATING_LABEL[rating]) return res.status(400).json({ error: 'rating 无效' });
       logStudy({ wordId, bookCode, mode: 'card', rating, correct: rating === 'known' ? 1 : 0 });
+      // 关键：把「第一次点了什么」记在服务端，pass 时不再问前端要
+      rememberFirst(wordId, rating);
       return res.json({ phase, wordId, spelling: word.spelling, scheduled: false });
     }
 
-    /* ---------- 过关归档（含旧版逻辑） ---------- */
-    const firstRaw = String(req.body?.firstRating || rating);
-    const firstRating = srs.RATING_LABEL[firstRaw] ? firstRaw : (srs.RATING_LABEL[rating] ? rating : '');
-    if (!firstRating) return res.status(400).json({ error: 'rating 必须是 known / vague / unknown' });
+    /* ---------- 过关归档 ---------- */
+    /*
+     * 取服务端记录的首次作答。
+     *
+     * 只有**老页面**（不传 phase，走 legacy）才允许用请求体里的值兜底 ——
+     * 那是唯一没有服务端记录的合法场景。
+     *
+     * ⚠️ 这里必须严格判 `phase === 'legacy'`，不能写成「拿不到记录就用请求体」：
+     * pass 会把首答记录 takeFirst 消费掉，所以「重复 pass」时也拿不到记录。
+     * 如果那时还允许兜底，就等于允许**对同一个词无限次重新排期**
+     * （实测确认过：第二次 pass 会被接受并再推一档）。
+     */
+    let firstRating = takeFirst(wordId);
+    if (!firstRating && phase === 'legacy') {
+      const legacyRaw = String(req.body?.firstRating || rating);
+      firstRating = srs.RATING_LABEL[legacyRaw] ? legacyRaw : '';
+    }
+    if (!firstRating) {
+      if (!srs.RATING_LABEL[rating]) {
+        return res.status(400).json({ error: 'rating 必须是 known / vague / unknown' });
+      }
+      return res.status(409).json({
+        error: '这个词本轮的首次作答记录已失效（服务可能重启过），请重新开始这一批',
+        reason: 'first-rating-missing',
+        wordId,
+      });
+    }
 
     const prev = getProgress(wordId) || {};
 
