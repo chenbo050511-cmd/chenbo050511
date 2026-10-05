@@ -343,20 +343,51 @@ ensureColumn('progress', 'suspended', 'suspended INTEGER DEFAULT 0');
 /* 一次性数据迁移                                                      */
 /* ------------------------------------------------------------------ */
 
-/** 跑一次就记个标记，之后不再重复执行 */
+/**
+ * 跑一次就记个标记，之后不再重复执行。
+ *
+ * ⚠️ 标记必须存在 `meta` 表，**不能存 `settings`**。
+ * 曾经存在 `settings` 里，结果「恢复出厂设置」会 `DELETE FROM settings`，
+ * 顺手把「这个库已经迁移过」这件事也删了 —— 下次启动服务时迁移**再跑一遍**，
+ * 把已经是新格式的阶段号当成旧格式再平移一次（stage 5 → 1，60 天变 3 天），
+ * 而 due_at 不动。静默、无提示，而且之后每次重启都继续破坏。
+ * `meta` 表存的是词库/题库的来源与构建时间，重置不会碰它，正合适。
+ */
 function migrateOnce(key, fn) {
-  const done = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-  if (done) return;
-  fn();
-  db.prepare('INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)').run(key, '1');
+  const MARK = `migration:${key}`;
+  const doneMeta = db.prepare('SELECT value FROM meta WHERE key = ?').get(MARK);
+  if (doneMeta) return;
+
+  // 兼容老库：标记可能还在 settings 里（老版本留下的）。
+  // 认出来就提升到 meta，并且**不重复执行**迁移。
+  const doneOld = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  if (doneOld) {
+    db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)').run(MARK, '1');
+    try { db.prepare('DELETE FROM settings WHERE key = ?').run(key); } catch { /* 忽略 */ }
+    return;
+  }
+
+  const res = fn();
+  // fn 返回 false 表示「按数据内容判断不需要迁移」——此时不打标记，
+  // 留待真正需要时再跑（见下面 srs_v2 的说明）。
+  if (res === false) return;
+  db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)').run(MARK, '1');
 }
 
 /*
  * 排期模型从「10 档（含 5 分/30 分/12 小时）」换成「6 档日粒度（1/3/7/15/30/60 天）」，
  * 已有进度的阶段号要按「间隔最接近」平移过来，**due_at 保持不动** ——
  * 不动到期时间，用户当前的复习节奏就不会被打乱。
+ *
+ * 这条迁移是**按数据内容自判**的，不只看标记：
+ * 新格式的阶段号只可能是 0..5，所以「存在任何 stage >= 6 的行」才是旧格式的铁证。
+ * 标记丢了但数据已是新格式（正是「恢复出厂设置 + 重启」那个坑留下的状态）时，
+ * 这一步会直接跳过，而不是把新数据再压一遍。
  */
 migrateOnce('srs_v2', () => {
+  const old = db.prepare('SELECT COUNT(*) AS c FROM progress WHERE stage >= 6').get().c;
+  if (!old) return false;      // 已经是新格式，别动它
+
   db.exec(`
     UPDATE progress SET stage = CASE
       WHEN stage <= 3 THEN 0     -- 旧 5分 / 30分 / 12时 / 1天  → 新「1 天」
@@ -367,6 +398,7 @@ migrateOnce('srs_v2', () => {
       ELSE 5                     -- 旧 60天                    → 新「60 天」
     END
   `);
+  return true;
 });
 
 /* ------------------------------------------------------------------ */
@@ -405,7 +437,12 @@ ensureDefaults();
 function getSettings() {
   const rows = query('SELECT key, value FROM settings');
   const out = { ...DEFAULT_SETTINGS };
-  for (const r of rows) out[r.key] = r.value;
+  for (const r of rows) {
+    // 老版本把迁移标记混在 settings 里（如 srs_v2），它不是设置项，
+    // 不该下发给前端（曾经 /api/settings 的返回里就多这么一个键）。
+    if (r.key === 'srs_v2' || r.key.startsWith('migration:')) continue;
+    out[r.key] = r.value;
+  }
   return out;
 }
 

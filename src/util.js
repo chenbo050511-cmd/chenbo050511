@@ -130,6 +130,44 @@ function isMistake(p = '') {
   return `(${q}quiz_wrong > 0 OR ${q}unknown_count > 0 OR ${q}marked > 0)`;
 }
 
+/**
+ * 「这个词还没开始学」的统一判定 —— 学新词队列必须用这一条。
+ *
+ * 不能只判断 `p.word_id IS NULL`（progress 里没有这一行）。
+ * 因为 /words/:id/{favorite,mark,note,suspend} 都是「先建后改」：
+ * 给一个还没学过的词加收藏 / 写笔记 / 暂缓，都会 `INSERT ... VALUES(?, 'new', 0, ...)`
+ * 造出一行 progress。一旦只认 `IS NULL`，这个词就**多了一行、于是永远不算新词**，
+ * 从此在「学新词」里彻底消失，再也背不到（而且用户完全看不出发生了什么）。
+ *
+ * 实测踩过：真实数据里出现过一个全零的 progress 行（加入错题本又移除留下的），
+ * 它永久堵住了一个考研词。
+ *
+ * 所以判定要看**这一行到底学没学过**：status 还是 new、一次都没过关（reps=0）、
+ * 也没有首次学习时间（first_seen_at IS NULL）。
+ *
+ * @param {string} p progress 表的别名，例如 'p'
+ */
+function isUntouched(p = 'p') {
+  const q = p ? `${p}.` : '';
+  return `(${q}word_id IS NULL
+           OR (COALESCE(${q}status,'new') = 'new'
+               AND COALESCE(${q}reps,0) = 0
+               AND ${q}first_seen_at IS NULL))`;
+}
+
+/**
+ * 「已经真正学过」的判定 —— 与 isUntouched() 互补。
+ * 统计口径必须用它，否则那些只带标记的空行会被算进「累计学过」，
+ * 而状态分布（learning/reviewing/mastered）又不算它们，两边永远对不上（实测差 1）。
+ */
+function isStarted(p = 'p') {
+  const q = p ? `${p}.` : '';
+  return `(${q}word_id IS NOT NULL
+           AND (COALESCE(${q}status,'new') <> 'new'
+                OR COALESCE(${q}reps,0) > 0
+                OR ${q}first_seen_at IS NOT NULL))`;
+}
+
 /** 取某词当前进度（没有则构造一条初始的） */
 function getProgress(wordId) {
   return db.queryOne('SELECT * FROM progress WHERE word_id = ?', [wordId]) || {
@@ -151,10 +189,11 @@ function getProgress(wordId) {
  * 带学习统计的词库列表（books 路由和 study 路由共用，避免两处 SQL 走偏）。
  * 传 code 则只返回该词库；返回的每一项都带上 total/started/mastered/due/unit_count/percent。
  *
- * 注意 `due` 要排除已暂缓（suspended）的词 —— 暂缓的意思是「别再排进复习队列」，
- * 如果这里还算它们，就会出现「队列里没有、徽标却显示还有几十个」的老毛病
- * （daily_review 截断队列时踩过同样的问题）。
- * `started` 则**不排除**：暂缓只是不复习，不代表这个词没学过。
+ * 三处口径都必须和别处一致（否则就会出现「浏览页说还有 3518 个新词、
+ * 学新词队列却只给 3517 个」这种自相矛盾）：
+ *  - `started` / `mastered` 用 isStarted()：**只带标记的空行不算学过**
+ *    （给未学的词写笔记/收藏/暂缓时会建出这种行）
+ *  - `due` 用 isStarted() 且排除已暂缓
  */
 function loadBooks(code) {
   const now = new Date().toISOString();
@@ -170,9 +209,9 @@ function loadBooks(code) {
       `SELECT b.id, b.code, b.name, b.short_name, b.description, b.accent, b.sort_order,
               (SELECT COUNT(*) FROM book_words bw WHERE bw.book_id = b.id) AS total,
               (SELECT COUNT(*) FROM book_words bw JOIN progress p ON p.word_id = bw.word_id
-                WHERE bw.book_id = b.id) AS started,
+                WHERE bw.book_id = b.id AND ${isStarted('p')}) AS started,
               (SELECT COUNT(*) FROM book_words bw JOIN progress p ON p.word_id = bw.word_id
-                WHERE bw.book_id = b.id AND p.status = 'mastered') AS mastered,
+                WHERE bw.book_id = b.id AND p.status = 'mastered' AND ${isStarted('p')}) AS mastered,
               (SELECT COUNT(*) FROM book_words bw JOIN progress p ON p.word_id = bw.word_id
                 WHERE bw.book_id = b.id AND p.due_at IS NOT NULL AND p.due_at <= ?
                   AND COALESCE(p.suspended,0) = 0) AS due,
@@ -233,6 +272,8 @@ module.exports = {
   logStudy,
   getProgress,
   isMistake,
+  isUntouched,
+  isStarted,
   loadBooks,
   streak,
 };

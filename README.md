@@ -326,9 +326,13 @@ D:\WordMaster
 │  ├─ verify-shortcut.js    按 MS-SHLLINK 规范校验生成的 .lnk
 │  ├─ make-qa-page.js       生成「按标准答案自动作答」的测试页，验证批改链路
 │  ├─ make-exp-test.js      生成「一半对一半错」的测试页，验证解析展开/收起
-│  ├─ verify-quiz-grading.js    选择题判分安全性回归（23 项：伪造 correct、跨组借用、
-│  │                            重复提交限流、老页面兼容…）
-│  ├─ check-notes-suspend.js    助记笔记 + 顽固词暂缓 + leech 判定回归（43 项）
+│  ├─ run-tests.js          一条命令跑完全部回归（在副本上起隔离实例）
+│  ├─ check-consistency.js      口径一致性回归（36 项：未学/已学/到期三套判定）
+│  ├─ verify-quiz-grading.js    判分安全性回归（23 项：伪造 correct、跨组借用、限流）
+│  ├─ check-notes-suspend.js    助记笔记 + 顽固词暂缓 + leech 回归（43 项）
+│  ├─ check-new-word-survival.js 新词存活回归（15 项：写标记后不消失）
+│  ├─ check-migration.js        迁移幂等回归（17 项：重置后不二次迁移）
+│  ├─ diagnose-ghost-progress.js 只读诊断：找出「有 progress 行但从未学过」的词
 │  └─ _raw/
 │     ├─ ecdict-slim.csv    精简词典（1.7MB，构建词库用这个就够）
 │     └─ exam/
@@ -601,28 +605,60 @@ HOST=0.0.0.0 node server.js      # Windows cmd: set HOST=0.0.0.0 && node server.
 
 ## 改完之后怎么确认没改坏
 
-项目里有两个**回归脚本**，都在 `tools/` 下、用 Node 内置的 `fetch`，不需要装测试框架。
-它们需要先把服务跑在**数据库副本**上（这些脚本会写进度，别指向真实数据）：
+一条命令跑完全部回归（它会自己在**数据库副本**上起隔离实例，不碰你的真实数据）：
 
 ```bash
-# 1) 准备副本 + 起一个专用实例
+node tools/run-tests.js
+```
+
+输出长这样：
+
+```
+  ✓ 前端静态检查（未定义引用 / 语法）        全部通过
+  ✓ 迁移幂等性（恢复出厂设置后不二次迁移）    通过 17 项，失败 0 项
+  ✓ 口径一致性（未学/已学/到期 三套判定）     通过 36 项，失败 0 项
+  ✓ 判分安全性（伪造 correct / 跨组借用 / 限流）通过 23 项，失败 0 项
+  ✓ 笔记 / 暂缓 / 顽固词                    通过 43 项，失败 0 项
+  ✓ 新词存活（写标记后不消失）              通过 15 项，失败 0 项
+  ✓ 服务端无 API 错误                       无
+```
+
+想单独跑某一个，就把它指向一个**跑在副本上的实例**：
+
+```bash
 cp data/wordmaster.db* /d/tmp/copytest/
 WM_DB=D:/tmp/copytest/wordmaster.db PORT=3999 node server.js --no-open
 
-# 2) 跑回归
-node tools/verify-quiz-grading.js    http://127.0.0.1:3999 cet4   # 判分安全性 23 项
-node tools/check-notes-suspend.js    http://127.0.0.1:3999 cet4   # 笔记/暂缓/顽固词 43 项
-
-# 3) 前端静态检查（不需要服务）
-node tools/check-frontend.js
+node tools/check-consistency.js      http://127.0.0.1:3999 kaoyan
+node tools/verify-quiz-grading.js    http://127.0.0.1:3999 cet4
+node tools/check-notes-suspend.js    http://127.0.0.1:3999 cet4
+node tools/check-new-word-survival.js http://127.0.0.1:3999 cet4
+node tools/check-migration.js          # 不需要服务
+node tools/check-frontend.js           # 不需要服务
 ```
 
-两个脚本都以退出码表达结果（`0` 通过），失败会打印是哪一条、
-以及期望值和实际值，方便定位。
+都以退出码表达结果（`0` 通过），失败会打印是哪一条以及期望值和实际值。
 
-`verify-quiz-grading.js` 里有一条**专门防止判分退化的用例**：
-伪造 `correct: true` 必须被判错。改动 `src/routes/quiz.js` 之后一定要跑它 ——
-判分一旦回到「信前端」，作弊是静默生效的，光看界面发现不了。
+### 四个脚本各自防的是什么（都是踩过的坑）
+
+- **`check-consistency.js`** —— 防「**同一个概念在多处各自实现**」。
+  「未学 / 已学 / 到期」三套判定在 5 个接口里必须给出**同一个数**：
+  学新词的 `newAvail`、浏览页的「未学」筛选、今日页、状态四桶之和、各词库的 `due`。
+  这里出过的具体事故：徽标显示 108、统计页显示 109（统计页那份漏了排除暂缓词）。
+- **`verify-quiz-grading.js`** —— 防判分退化。伪造 `correct: true` 必须被判错。
+  改 `src/routes/quiz.js` 之后一定要跑 —— 判分一旦回到「信前端」，**作弊是静默生效的**，
+  光看界面发现不了。
+- **`check-new-word-survival.js`** —— 防「**给未学的词写笔记/收藏/暂缓，它就从学新词里消失**」。
+  这些接口都会给词建一行 `status='new'` 的 progress，而学新词原来只认
+  「progress 里没有这一行」，于是那个词再也背不到、而且**清空笔记也不还原**。
+- **`check-migration.js`** —— 防「**恢复出厂设置后重启，进度被二次迁移**」。
+  迁移标记原来存在 `settings` 表里，重置会把它一起删掉，下次启动就把
+  新格式的阶段号当旧格式再压一遍（60 天变 3 天），静默且每次重启都继续破坏。
+
+> 通用教训：这个项目里凡是「同一个概念在 SQL 里写了不止一遍」，
+> 迟早会出现两处不一致。现在「未学」「已学」「错题」三个判定都抽成了
+> `src/util.js` 里的单个函数（`isUntouched` / `isStarted` / `isMistake`），**改口径只改一处**。
+
 
 ---
 

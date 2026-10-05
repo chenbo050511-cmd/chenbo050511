@@ -5,7 +5,7 @@
 const express = require('express');
 const db = require('../db');
 const srs = require('../srs');
-const { wrap, int, dayStartIso, todayStr, saveProgress, logStudy, getProgress, loadBooks, streak, isMistake } = require('../util');
+const { wrap, int, dayStartIso, todayStr, saveProgress, logStudy, getProgress, loadBooks, streak, isMistake, isUntouched, isStarted } = require('../util');
 
 const router = express.Router();
 
@@ -125,7 +125,7 @@ router.get(
     const newAvail = db.queryOne(
       `SELECT COUNT(*) AS c FROM book_words bw
          LEFT JOIN progress p ON p.word_id = bw.word_id
-        WHERE bw.book_id = ? AND p.word_id IS NULL`,
+        WHERE bw.book_id = ? AND ${isUntouched('p')}`,
       [book.id]
     ).c;
 
@@ -240,7 +240,7 @@ router.get(
              JOIN words w ON w.id = bw.word_id
              LEFT JOIN progress p ON p.word_id = w.id
              LEFT JOIN units u ON u.id = bw.unit_id
-            WHERE bw.book_id = ? AND p.word_id IS NULL
+            WHERE bw.book_id = ? AND ${isUntouched('p')}
             ORDER BY ${order}
             LIMIT ?`,
           [book.id, take]
@@ -422,17 +422,22 @@ router.get(
     const newAvail = db.queryOne(
       `SELECT COUNT(*) AS c FROM book_words bw
          LEFT JOIN progress p ON p.word_id = bw.word_id
-        WHERE bw.book_id = ? AND p.word_id IS NULL`,
+        WHERE bw.book_id = ? AND ${isUntouched('p')}`,
       [book.id]
     ).c;
 
+    /*
+     * 总览口径：`started` 必须用 isStarted() —— 只带标记的空行（给未学的词
+     * 写笔记/收藏/暂缓时建出来的）不算「学过」。否则它会和
+     * 「学习中 + 复习中 + 已掌握」三个桶对不上（实测差 1，正是这种幽灵行）。
+     */
     const global = db.queryOne(`
-      SELECT (SELECT COUNT(*) FROM progress) AS started,
-             (SELECT COUNT(*) FROM progress WHERE status = 'mastered') AS mastered,
-             (SELECT COUNT(*) FROM progress WHERE status = 'learning') AS learning,
-             (SELECT COUNT(*) FROM progress WHERE status = 'reviewing') AS reviewing,
-             (SELECT COUNT(*) FROM progress WHERE ${isMistake()}) AS wrongWords,
-             (SELECT COUNT(*) FROM progress WHERE COALESCE(suspended,0) = 1) AS suspendedWords,
+      SELECT (SELECT COUNT(*) FROM progress p WHERE ${isStarted('p')}) AS started,
+             (SELECT COUNT(*) FROM progress p WHERE status = 'mastered' AND ${isStarted('p')}) AS mastered,
+             (SELECT COUNT(*) FROM progress p WHERE status = 'learning' AND ${isStarted('p')}) AS learning,
+             (SELECT COUNT(*) FROM progress p WHERE status = 'reviewing' AND ${isStarted('p')}) AS reviewing,
+             (SELECT COUNT(*) FROM progress p WHERE ${isMistake('p')}) AS wrongWords,
+             (SELECT COUNT(*) FROM progress p WHERE COALESCE(p.suspended,0) = 1 AND ${isStarted('p')}) AS suspendedWords,
              (SELECT COUNT(*) FROM words) AS total,
              (SELECT COUNT(*) FROM logs) AS totalReviews,
              (SELECT COALESCE(SUM(correct),0) FROM logs) AS rightReviews,

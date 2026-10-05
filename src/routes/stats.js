@@ -5,7 +5,7 @@
 const express = require('express');
 const db = require('../db');
 const srs = require('../srs');
-const { wrap, int, dayStr, streak, isMistake } = require('../util');
+const { wrap, int, dayStr, streak, isMistake, isUntouched, isStarted } = require('../util');
 
 const router = express.Router();
 
@@ -15,19 +15,22 @@ router.get(
   wrap((req, res) => {
     const now = new Date().toISOString();
 
-    // wrong_words 必须和错题本列表用同一套判定，否则卡片数字和列表条数对不上
+    // wrong_words 必须和错题本列表用同一套判定，否则卡片数字和列表条数对不上。
+    // started / mastered / learning / reviewing 都必须用 isStarted()：
+    // 只带标记的空行（未学的词被写笔记/收藏/暂缓时建出来的）不算「学过」，
+    // 否则它们会和状态分布、词库百分比互相矛盾。
     const g = db.queryOne(`
       SELECT
         (SELECT COUNT(*) FROM words) AS word_total,
-        (SELECT COUNT(*) FROM progress) AS started,
-        (SELECT COUNT(*) FROM progress WHERE status = 'learning') AS learning,
-        (SELECT COUNT(*) FROM progress WHERE status = 'reviewing') AS reviewing,
-        (SELECT COUNT(*) FROM progress WHERE status = 'mastered') AS mastered,
-        (SELECT COUNT(*) FROM progress WHERE favorite = 1) AS favorite,
-        (SELECT COUNT(*) FROM progress WHERE due_at IS NOT NULL AND due_at <= ?
+        (SELECT COUNT(*) FROM progress p WHERE ${isStarted('p')}) AS started,
+        (SELECT COUNT(*) FROM progress p WHERE status = 'learning' AND ${isStarted('p')}) AS learning,
+        (SELECT COUNT(*) FROM progress p WHERE status = 'reviewing' AND ${isStarted('p')}) AS reviewing,
+        (SELECT COUNT(*) FROM progress p WHERE status = 'mastered' AND ${isStarted('p')}) AS mastered,
+        (SELECT COUNT(*) FROM progress p WHERE favorite = 1 AND ${isStarted('p')}) AS favorite,
+        (SELECT COUNT(*) FROM progress p WHERE due_at IS NOT NULL AND due_at <= ?
            AND COALESCE(suspended,0) = 0) AS due_now,
-        (SELECT COUNT(*) FROM progress WHERE COALESCE(suspended,0) = 1) AS suspended,
-        (SELECT COUNT(*) FROM progress WHERE ${isMistake()}) AS wrong_words
+        (SELECT COUNT(*) FROM progress p WHERE COALESCE(suspended,0) = 1 AND ${isStarted('p')}) AS suspended,
+        (SELECT COUNT(*) FROM progress p WHERE ${isMistake('p')} AND ${isStarted('p')}) AS wrong_words
     `, [now]);
 
     // 正确率只统计第一次作答（card = 翻卡首答，quiz = 测试）。
@@ -207,8 +210,28 @@ router.get(
     // 接近封顶的用绿色 —— 与「已掌握」的语义对齐
     const colorOf = (i) => (i <= 1 ? 'warn' : i <= 3 ? 'info' : 'ok');
 
-    const statusRows = db.query("SELECT status, COUNT(*) AS c FROM progress GROUP BY status");
+    /*
+     * 四个状态桶的和必须等于 **去重后的总词数**（曾经是 6157 vs 6158，差的那一个
+     * 正是「有 progress 行但从未学过」的幽灵行：它既不算 new（有行了），
+     * 也不进 learning/reviewing/mastered（status 是 new））。
+     * 现在按同一个判定划分：
+     *   new       = 这个词没有任何「已学」的 progress 行（isUntouched）
+     *   其余三桶 = 有行且真的学过（isStarted）+ 对应 status
+     *
+     * 注意基数必须是 `words` 而不是 `book_words`：后者是多对多，
+     * 一个词属于 3 个词库会被数 3 次（会算出 13477 这种超过总词数的值）。
+     */
+    const statusRows = db.query(
+      `SELECT status, COUNT(*) AS c FROM progress p WHERE ${isStarted('p')} GROUP BY status`
+    );
     const statusMap = new Map(statusRows.map((r) => [r.status, r.c]));
+    const untouched = db.queryOne(
+      `SELECT COUNT(*) AS c FROM words w
+        WHERE NOT EXISTS (
+          SELECT 1 FROM progress p
+           WHERE p.word_id = w.id AND NOT ${isUntouched('p')}
+        )`
+    ).c;
 
     res.json({
       items,
@@ -217,7 +240,7 @@ router.get(
       intervals: srs.INTERVALS,
       colorOf: items.map((_, i) => colorOf(i)),
       status: {
-        new: db.queryOne('SELECT COUNT(*) AS c FROM words').c - db.queryOne('SELECT COUNT(*) AS c FROM progress').c,
+        new: untouched,
         learning: statusMap.get('learning') || 0,
         reviewing: statusMap.get('reviewing') || 0,
         mastered: statusMap.get('mastered') || 0,
@@ -231,13 +254,17 @@ router.get(
   '/books',
   wrap((req, res) => {
     const now = new Date().toISOString();
+    const s = isStarted('p');
     res.json(
       db.query(
         `SELECT b.code, b.short_name, b.accent,
                 COUNT(bw.word_id) AS total,
-                SUM(CASE WHEN p.word_id IS NOT NULL THEN 1 ELSE 0 END) AS started,
-                SUM(CASE WHEN p.status = 'mastered' THEN 1 ELSE 0 END) AS mastered,
-                SUM(CASE WHEN p.due_at IS NOT NULL AND p.due_at <= ? THEN 1 ELSE 0 END) AS due
+                SUM(CASE WHEN ${s} THEN 1 ELSE 0 END) AS started,
+                SUM(CASE WHEN p.status = 'mastered' AND ${s} THEN 1 ELSE 0 END) AS mastered,
+                -- 到期数必须排除已暂缓，否则会和侧边栏徽标 / 今日页对不上
+                -- （曾经少这一个条件：徽标 108、统计页 109）
+                SUM(CASE WHEN p.due_at IS NOT NULL AND p.due_at <= ?
+                          AND COALESCE(p.suspended,0) = 0 THEN 1 ELSE 0 END) AS due
            FROM books b
            JOIN book_words bw ON bw.book_id = b.id
            LEFT JOIN progress p ON p.word_id = bw.word_id

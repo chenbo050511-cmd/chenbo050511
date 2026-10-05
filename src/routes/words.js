@@ -5,7 +5,7 @@
 const express = require('express');
 const db = require('../db');
 const srs = require('../srs');
-const { wrap, int } = require('../util');
+const { wrap, int, isUntouched } = require('../util');
 
 const router = express.Router();
 
@@ -15,7 +15,10 @@ const NOTE_MAX = 500;
 /** 学习状态筛选条件 → SQL 片段 */
 const STATUS_SQL = {
   all: '1=1',
-  new: "COALESCE(p.status,'new') = 'new'",
+  // 「未学」必须用 isUntouched()，不能只看 status='new' ——
+  // 给未学的词写笔记/收藏/暂缓会建出一行 status='new' 的 progress，
+  // 只判 status 的话这个筛选会把它算成「已学」，和「学新词」队列矛盾。
+  new: isUntouched('p'),
   learning: "p.status = 'learning'",
   reviewing: "p.status = 'reviewing'",
   mastered: "p.status = 'mastered'",
