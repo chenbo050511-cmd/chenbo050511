@@ -113,8 +113,18 @@
     root.dataset.theme = t;
     try { localStorage.setItem(THEME_KEY, t); } catch { /* 无痕模式忽略 */ }
 
+    /*
+     * 同步浏览器地址栏/状态栏的 theme-color。
+     *
+     * 这个 meta 必须是**真色值**（浏览器不接受 var()），但不能因此在这里
+     * 再写一份写死的颜色 —— 那就又多了一个颜色定义处，改主题时必然漂移。
+     * 所以从 CSS 令牌 --bg 读出来用：CSS 依然是唯一的定义处。
+     */
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', t === 'dark' ? '#0b0d12' : '#f6f7fa');
+    if (meta) {
+      const bg = getComputedStyle(root).getPropertyValue('--bg').trim();
+      if (bg) meta.setAttribute('content', bg);
+    }
 
     // 通知页面内其他和主题相关的控件（比如设置页的分段按钮）同步状态
     document.dispatchEvent(new CustomEvent('wm-theme-change', { detail: { theme: t } }));

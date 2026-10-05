@@ -8,6 +8,10 @@
   --accent-text: #8b8ffb;
   --accent-soft: rgba(99, 102, 241, 0.14);
   --accent-line: rgba(99, 102, 241, 0.35);
+  /* 主按钮渐变的第二端（靛蓝 → 紫）。
+     这个紫以前在项目里被写成三种值：#7c3aed / #8b4bf0 / #8b5cf6，
+     属于典型的「同一个概念在多处各自实现」，迟早漂移成三种颜色。现收成一个令牌。 */
+  --accent-2: #7c3aed;
   --ok: #10b981;
   --ok-soft: rgba(16, 185, 129, 0.14);
   --warn: #f59e0b;
@@ -32,6 +36,16 @@
   --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, Consolas, monospace;
 
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* 划词标记的 5 个颜色（真题页点词加下划线）。
+     这是它们**唯一**的定义处：exam.js 的色板按钮直接用 var(--hl-N)，
+     下划线颜色也走这里。以前 app.css 和 exam.js 各写了一份十六进制值，
+     值虽然一样，但改一处就会错位 —— 色板显示的颜色和实际下划线的颜色不一致。 */
+  --hl-0: #f59e0b;   /* 黄 */
+  --hl-1: #10b981;   /* 绿 */
+  --hl-2: #3b82f6;   /* 蓝 */
+  --hl-3: #ef4444;   /* 红 */
+  --hl-4: #a855f7;   /* 紫 */
 }
 
 /* ---------------------------------- 深色 ---------------------------------- */
@@ -79,6 +93,8 @@ html[data-theme="light"] {
   --accent-text: #4f46e5;
   --accent-soft: rgba(79, 70, 229, 0.1);
   --accent-line: rgba(79, 70, 229, 0.4);
+  /* 浅色主题下渐变也要压深一档，否则白底上几乎看不出层次 */
+  --accent-2: #6d28d9;
   --ok: #047857;
   --ok-soft: rgba(4, 120, 87, 0.1);
   --warn: #b45309;
@@ -183,7 +199,7 @@ html.theme-anim *::after {
   width: 36px; height: 36px;
   border-radius: 11px;
   display: grid; place-items: center;
-  background: linear-gradient(140deg, var(--accent), #8b5cf6 55%, #0ea5e9);
+  background: linear-gradient(140deg, var(--accent), var(--accent-2) 55%, var(--info));
   box-shadow: 0 6px 18px rgba(99, 102, 241, 0.35);
   color: #fff;
   font-weight: 800;
@@ -312,12 +328,12 @@ html.theme-anim *::after {
 .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 .btn .ico { width: 16px; height: 16px; }
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent), #7c3aed);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
   border-color: transparent;
   color: #fff;
   box-shadow: 0 6px 18px rgba(99, 102, 241, 0.32);
 }
-.btn-primary:hover { background: linear-gradient(135deg, #7276f5, #8b4bf0); border-color: transparent; }
+.btn-primary:hover { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; }
 .btn-ok { background: var(--ok); border-color: transparent; color: #fff; }
 .btn-ok:hover { background: #0ea472; border-color: transparent; }
 .btn-bad { background: var(--bad); border-color: transparent; color: #fff; }
@@ -405,7 +421,7 @@ html.theme-anim *::after {
 .bar { height: 7px; border-radius: 99px; background: var(--track); overflow: hidden; }
 .bar > i {
   display: block; height: 100%; border-radius: 99px;
-  background: linear-gradient(90deg, var(--accent), #8b5cf6);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
   transition: width .5s var(--ease);
 }
 .bar.ok > i { background: linear-gradient(90deg, var(--ok), #34d399); }
@@ -1040,11 +1056,11 @@ html.theme-anim *::after {
   text-decoration-thickness: 2.5px;
   text-underline-offset: 3.5px;
 }
-.hl-w.on[data-c="0"] { text-decoration-color: #f59e0b; }
-.hl-w.on[data-c="1"] { text-decoration-color: #10b981; }
-.hl-w.on[data-c="2"] { text-decoration-color: #3b82f6; }
-.hl-w.on[data-c="3"] { text-decoration-color: #ef4444; }
-.hl-w.on[data-c="4"] { text-decoration-color: #a855f7; }
+.hl-w.on[data-c="0"] { text-decoration-color: var(--hl-0); }
+.hl-w.on[data-c="1"] { text-decoration-color: var(--hl-1); }
+.hl-w.on[data-c="2"] { text-decoration-color: var(--hl-2); }
+.hl-w.on[data-c="3"] { text-decoration-color: var(--hl-3); }
+.hl-w.on[data-c="4"] { text-decoration-color: var(--hl-4); }
 
 .hl-pop {
   position: absolute; z-index: 40;

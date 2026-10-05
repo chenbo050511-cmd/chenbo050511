@@ -448,9 +448,19 @@
       buttons.forEach(function(b) {
         var btn = document.createElement("button");
         btn.className = "grade-btn";
+        /*
+         * 两个属性都要设：
+         *   data-g      —— 点击事件读它（btn.dataset.g）
+         *   data-rating —— CSS 的悬停变色读它（.grade-btn[data-rating="..."]:hover）
+         *
+         * 以前只设了 data-g，而 app.css 里写的是 [data-rating="..."]，
+         * 选择器对不上，那三条 hover 变色规则**从来没有生效过**；
+         * 同时这行还内联写死了 #e5e7eb / #fff / #374151（浅色系），
+         * 于是深色主题下这三颗按钮永远是一块白底。现在交给 CSS。
+         */
         btn.dataset.g = b.g;
+        btn.dataset.rating = b.g;
         btn.textContent = b.label;
-        btn.style.cssText = "flex:1;padding:12px 8px;border-radius:8px;border:1.5px solid #e5e7eb;background:#fff;font-size:13px;font-weight:500;cursor:pointer;color:#374151;";
         gradeRow.appendChild(btn);
       });
     }
@@ -785,19 +795,22 @@
    * 作答后的轻量反馈（居中一闪，不打断节奏）。
    *
    * 三档各自的**实际后果**必须说实话 —— 反馈是用户判断「刚才那一下算什么」的唯一依据：
-   *   known   → 过关，间隔大步推进
-   *   vague   → 过关，但后端按「不认识」处理 → 明天再来（所以不能说成「已掌握」）
-   *   unknown → 不过关，插回队列再考
+   *   known   → 过关，间隔大步推进（跳 2 档）
+   *   vague   → 过关，间隔只推进 1 档
+   *   unknown → 不过关，搬到队列后面再考
    *
    * 以前这里只传一个布尔 passed，导致「模糊」和「认识」都显示绿色「✓ 已掌握」，
-   * 而同一次点击落库的是 stage=0 + 明天复习 + vague_count+1（记账词、参与顽固词判定）。
+   * 而同一次点击落库的是打回第 0 档 + 明天复习 + vague_count+1（记账词、参与顽固词判定）。
    * 用户看到的和实际发生的完全相反。
+   *
+   * 颜色用 CSS 令牌而不是字面量：亮绿配白字在浅色主题下对比度不足，
+   * 而 var(--ok) / var(--warn) / var(--bad) 在浅色主题里已经整体压深过一档。
    */
   function showFeedback(w, rating) {
     const STYLE = {
-      known: { bg: '#10b981', text: '✓ 记住了' },
-      vague: { bg: '#f59e0b', text: '～ 有点模糊 · 明天再来' },
-      unknown: { bg: '#f43f5e', text: '✗ 不认识 · 稍后再考' },
+      known: { bg: 'var(--ok)', text: '✓ 记住了 · 下次隔得更久' },
+      vague: { bg: 'var(--warn)', text: '～ 有点模糊 · 间隔只进一档' },
+      unknown: { bg: 'var(--bad)', text: '✗ 不认识 · 稍后再考' },
     };
     const cfg = STYLE[rating] || STYLE.unknown;
 
@@ -809,10 +822,10 @@
       left: 50%;
       transform: translate(-50%, -50%);
       padding: 12px 24px;
-      border-radius: 8px;
+      border-radius: var(--r-md);
       font-size: 14px;
       font-weight: 500;
-      color: #fff;
+      color: #fff;   /* 实心语义色底上的白字（规范允许的例外） */
       background: ${cfg.bg};
       z-index: 1000;
       pointer-events: none;

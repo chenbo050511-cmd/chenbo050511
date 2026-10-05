@@ -101,7 +101,7 @@
   .mob-more-mask {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, .5);
+    background: var(--overlay);   /* 与 .drawer-mask 共用同一个遮罩令牌 */
     z-index: 200;
     opacity: 0;
     visibility: hidden;
@@ -510,7 +510,7 @@
 
   --- 禁用 hover 效果 --- */
   .btn:hover { background: var(--card-hi); }
-  .btn-primary:hover { background: linear-gradient(135deg, var(--accent), #7c3aed); }
+  .btn-primary:hover { background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
   .nav-item:hover { background: none; color: var(--text-dim); }
   .nav-item.active:hover { color: var(--accent); }
   .word-row:hover { background: transparent; }
@@ -536,7 +536,7 @@
 /* 触摸设备禁用悬停 */
 @media (hover: none) and (pointer: coarse) {
   .btn:hover { background: var(--card-hi); border-color: var(--border); }
-  .btn-primary:hover { background: linear-gradient(135deg, var(--accent), #7c3aed); }
+  .btn-primary:hover { background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
   .nav-item:hover { background: none; color: var(--text-dim); }
   .word-row:hover { background: transparent; }
   .option:hover:not(:disabled) { border-color: var(--border); background: var(--card); }
@@ -546,14 +546,24 @@
 
 
 
-/* ============================== WordMaster 移动端真题页 —— 极简教育风 ============================== */
-/* 设计原则：阅读优先、大量留白、清晰层级、柔和蓝主色、白底 */
+/* ============================== WordMaster 移动端真题页 ============================== */
+/*
+ * 设计原则：阅读优先、留白充足、层级清晰。
+ *
+ * ⚠️ 这里曾经是一套**独立的设计系统**：柔和蓝主色 #4a6fa5、白底 #fff、
+ * Tailwind 灰阶（#1a1a1a / #f0f0f0 / #6b7280 …）。它和 app.css 的令牌体系
+ * 完全无关，后果是**深色主题在移动端真题页失效**（白底把用户选的暗色主题盖掉）。
+ * 现已全部收敛到 app.css 的令牌：颜色一律 var(--*)，mobile.css 只负责布局与尺寸。
+ */
 
 @media (max-width: 860px) {
 
-  /* --- 全局重置 --- */
+  /* --- 全局重置（.exam-shell 原来被定义两次，这里是合并后的唯一一份） --- */
   .exam-shell {
-    background: #fff;
+    /* 用系统字体链让 iOS 上更像原生；比 app.css 的 Inter 链更贴合移动端 */
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", var(--font);
+    -webkit-font-smoothing: antialiased;
+    background: transparent;   /* 不再盖白底，跟随主题 */
     padding: 0;
     gap: 0;
   }
@@ -563,8 +573,8 @@
     display: flex;
     align-items: center;
     padding: 12px 16px;
-    background: #fff;
-    border-bottom: 1px solid #f0f0f0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
     z-index: 100;
@@ -582,7 +592,7 @@
     background: none;
     border: none;
     font-size: 16px;
-    color: #4a6fa5;
+    color: var(--accent-text);
     padding: 4px 8px;
     font-weight: 500;
   }
@@ -590,7 +600,7 @@
   .exam-top .et-info b {
     font-size: 15px;
     font-weight: 600;
-    color: #1a1a1a;
+    color: var(--text);
     flex: 1;
     text-align: center;
     white-space: nowrap;
@@ -610,15 +620,15 @@
     flex-wrap: wrap;
     gap: 6px;
     padding: 8px 16px;
-    background: #fff;
-    border-bottom: 1px solid #f5f5f5;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
   }
 
   .pb-head .chip {
     font-size: 11px;
     padding: 3px 8px;
-    background: #f7f8fa;
-    color: #6b7280;
+    background: var(--card-hi);
+    color: var(--text-dim);
     border-radius: 4px;
     border: none;
     font-weight: 400;
@@ -642,7 +652,7 @@
     min-height: 0;
     position: static;
     display: block;
-    background: #fff;
+    background: var(--card);
     border-bottom: none;
     margin: 0;
     width: auto;
@@ -665,7 +675,7 @@
   .passage-text {
     font-size: 16px;
     line-height: 1.95;
-    color: #1a1a1a;
+    color: var(--text);
     letter-spacing: 0.01em;
     font-family: -apple-system, Georgia, serif;
   }
@@ -680,10 +690,10 @@
     padding: 12px;
     text-align: center;
     font-size: 13px;
-    color: #4a6fa5;
-    background: #fff;
+    color: var(--accent-text);
+    background: var(--card);
     border: none;
-    border-top: 1px solid #f0f0f0;
+    border-top: 1px solid var(--border);
     cursor: pointer;
     font-weight: 500;
   }
@@ -692,7 +702,7 @@
   .qbox {
     display: flex;
     flex-direction: column;
-    background: #fafbfc;
+    background: var(--bg);
     flex: none;
     overflow: visible;
     min-height: 0;
@@ -724,7 +734,7 @@
     max-width: 100%;
     scroll-snap-align: start;
     padding: 24px 20px;
-    background: #fff;
+    background: var(--card);
     border: none;
     box-shadow: none;
     border-radius: 0;
@@ -748,7 +758,7 @@
     gap: 10px;
     font-size: 15px;
     line-height: 1.7;
-    color: #1a1a1a;
+    color: var(--text);
     font-weight: 500;
   }
 
@@ -756,8 +766,8 @@
     width: 24px;
     height: 24px;
     font-size: 12px;
-    background: #eef2f7;
-    color: #4a6fa5;
+    background: var(--accent-soft);
+    color: var(--accent-text);
     border-radius: 50%;
     display: grid;
     place-items: center;
@@ -791,11 +801,11 @@
     min-height: 48px;
     font-size: 15px;
     line-height: 1.55;
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     gap: 12px;
-    border: 1.5px solid #e5e7eb;
-    background: #fff;
-    color: #374151;
+    border: 1.5px solid var(--border-strong);
+    background: var(--card);
+    color: var(--text-dim);
   }
 
   .qq-opt .ol {
@@ -803,9 +813,9 @@
     height: 22px;
     font-size: 11px;
     border-radius: 50%;
-    border: 1.5px solid #d1d5db;
-    background: #fff;
-    color: #6b7280;
+    border: 1.5px solid var(--border-strong);
+    background: var(--card);
+    color: var(--text-dim);
     display: grid;
     place-items: center;
     font-weight: 500;
@@ -813,14 +823,14 @@
   }
 
   .qq-opt.sel {
-    border-color: #4a6fa5;
-    background: #f0f5ff;
+    border-color: var(--accent);
+    background: var(--accent-soft);
   }
 
   .qq-opt.sel .ol {
-    background: #4a6fa5;
-    border-color: #4a6fa5;
-    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;   /* 实心主色底上的白字（规范允许的例外） */
   }
 
   /* 段落匹配 */
@@ -833,16 +843,16 @@
     min-width: 36px;
     height: 36px;
     font-size: 13px;
-    border-radius: 8px;
-    border: 1.5px solid #e5e7eb;
-    background: #fff;
-    color: #374151;
+    border-radius: var(--r-sm);
+    border: 1.5px solid var(--border-strong);
+    background: var(--card);
+    color: var(--text-dim);
   }
 
   .pick-btn.sel {
-    background: #4a6fa5;
-    border-color: #4a6fa5;
-    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;   /* 实心主色底上的白字 */
   }
 
   /* --- 4. 分页控件 --- */
@@ -852,8 +862,8 @@
     justify-content: center;
     gap: 20px;
     padding: 12px 16px;
-    background: #fff;
-    border-top: 1px solid #f0f0f0;
+    background: var(--card);
+    border-top: 1px solid var(--border);
     flex: none;
     position: static;
   }
@@ -862,9 +872,9 @@
     width: 36px;
     height: 36px;
     border-radius: 50%;
-    border: 1.5px solid #d1d5db;
-    background: #fff;
-    color: #374151;
+    border: 1.5px solid var(--border-strong);
+    background: var(--card);
+    color: var(--text-dim);
     font-size: 16px;
     display: grid;
     place-items: center;
@@ -872,13 +882,13 @@
     font-weight: 500;
   }
 
-  .qnav-btn:active { background: #f3f4f6; }
+  .qnav-btn:active { background: var(--card-hi); }
   .qnav-btn:disabled { opacity: .3; pointer-events: none; }
 
   .qnav-counter {
     font-size: 14px;
     font-weight: 600;
-    color: #1a1a1a;
+    color: var(--text);
     min-width: 40px;
     text-align: center;
     font-family: -apple-system, monospace;
@@ -890,8 +900,8 @@
     align-items: center;
     padding: 10px 16px;
     gap: 12px;
-    background: #fff;
-    border-top: 1px solid #f0f0f0;
+    background: var(--card);
+    border-top: 1px solid var(--border);
     position: static;
     bottom: auto;
     z-index: auto;
@@ -906,7 +916,7 @@
   .exam-timer-mobile {
     font-size: 13px;
     font-family: -apple-system, monospace;
-    color: #4a6fa5;
+    color: var(--accent-text);
     font-weight: 500;
   }
 
@@ -918,16 +928,16 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #e5e7eb;
+    background: var(--track);
   }
 
   .exam-progress-mini i.done {
-    background: #4a6fa5;
+    background: var(--accent);
   }
 
   #ex-count {
     font-size: 12px !important;
-    color: #6b7280 !important;
+    color: var(--text-dim) !important;
   }
 
   .exam-answer-panel .spacer {
@@ -939,8 +949,8 @@
     padding: 8px 20px;
     font-size: 13px;
     border-radius: 20px;
-    background: #4a6fa5;
-    color: #fff;
+    background: var(--accent);
+    color: #fff;   /* 实心主色底上的白字 */
     border: none;
     font-weight: 600;
   }
@@ -954,16 +964,16 @@
     margin-top: 12px;
     padding-top: 12px;
     font-size: 13px;
-    border-top: 1px solid #f0f0f0;
+    border-top: 1px solid var(--border);
   }
 
   .qq-exp {
     margin-top: 10px;
     padding: 12px;
     font-size: 13px;
-    background: #f9fafb;
-    border-radius: 8px;
-    border: 1px solid #f0f0f0;
+    background: var(--card-hi);
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
   }
 }
 
@@ -974,37 +984,23 @@
   .qq-chevron { display: none; }
 }
 
-/* ============================== WordMaster 移动端全局 —— 柔和蓝主色 ============================== */
+/* ============================== WordMaster 移动端补充 ============================== */
+/*
+ * 这里曾经有一段「柔和蓝主色」的第二套设计系统：定义了 12 个 --wm-* 变量
+ * （--wm-primary: #4a6fa5 等），但**全项目没有任何地方引用它们** ——
+ * 与之配套的却是 14 处直接写死 #4a6fa5 的规则（见下方真题页）。
+ * 定义没人用、使用处又硬编码，等于两套都没生效。现已删除；
+ * 所有颜色统一由 app.css 的令牌提供。
+ */
 @media (max-width: 860px) {
-  :root {
-    --wm-primary: #4a6fa5;
-    --wm-primary-light: #f0f5ff;
-    --wm-primary-soft: #eef2f7;
-    --wm-text: #1a1a1a;
-    --wm-text-secondary: #6b7280;
-    --wm-text-muted: #9ca3af;
-    --wm-bg: #ffffff;
-    --wm-bg-soft: #fafbfc;
-    --wm-border: #f0f0f0;
-    --wm-border-light: #e5e7eb;
-    --wm-radius: 8px;
-    --wm-shadow: 0 1px 3px rgba(0,0,0,.04);
-  }
-
-  .exam-shell {
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
-    -webkit-font-smoothing: antialiased;
-    background: #fff;
-  }
-
   /* 优化选项按钮触摸体验 */
   .qq-opt {
-    transition: all .15s ease;
+    transition: all .15s var(--ease);
   }
 
   .qq-opt:active {
     transform: scale(.98);
-    background: #f9fafb;
+    background: var(--card-hi);
   }
 
   .pick-btn:active {
@@ -1032,8 +1028,8 @@
     width: 28px;
     height: 28px;
     font-size: 13px;
-    background: #eef2f7;
-    color: #4a6fa5;
+    background: var(--accent-soft);
+    color: var(--accent-text);
     border-radius: 50%;
     display: grid;
     place-items: center;
@@ -1044,12 +1040,12 @@
   .para-item .pt {
     font-size: 15px;
     line-height: 1.75;
-    color: #374151;
+    color: var(--text-dim);
   }
 
   .para-item.on .pl {
-    background: #4a6fa5;
-    color: #fff;
+    background: var(--accent);
+    color: #fff;   /* 实心主色底上的白字 */
   }
 
   /* 原文高亮词优化 */

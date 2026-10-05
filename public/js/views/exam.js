@@ -254,12 +254,20 @@
   /* 划词标记：点短文里的单词，弹出色板给它加一条下划线                    */
   /* ---------------------------------------------------------------- */
 
+  /*
+   * 划词色板。
+   *
+   * 颜色**只在这里写变量名**，实际值定义在 app.css 的 `:root` 里（--hl-0..--hl-4），
+   * 下划线颜色（`.hl-w.on[data-c="N"]`）也引用同一组变量。
+   * 以前这里和 app.css 各写一份十六进制值，值虽然一致，但改一处就会错位 ——
+   * 色板按钮显示的颜色和实际下划线的颜色会不一致，而且没有任何提示。
+   */
   const HL_COLORS = [
-    { name: '黄', c: '#f59e0b' },
-    { name: '绿', c: '#10b981' },
-    { name: '蓝', c: '#3b82f6' },
-    { name: '红', c: '#ef4444' },
-    { name: '紫', c: '#a855f7' },
+    { name: '黄', c: 'var(--hl-0)' },
+    { name: '绿', c: 'var(--hl-1)' },
+    { name: '蓝', c: 'var(--hl-2)' },
+    { name: '红', c: 'var(--hl-3)' },
+    { name: '紫', c: 'var(--hl-4)' },
   ];
 
   /**
@@ -1133,7 +1141,7 @@ function questionBlock(q, i, isMatch, letters) {
       <div>
         <div class="lbl" style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-mute);font-weight:650;margin-bottom:8px">逐题回顾</div>
         ${data.detail.map((item) => `
-          <div class="card" style="padding:12px;margin-bottom:9px;border-color:${item.correct ? 'rgba(16,185,129,.3)' : 'rgba(244,63,94,.3)'}">
+          <div class="card qq ${item.correct ? 'right' : 'wrong'}" style="padding:12px;margin-bottom:9px">
             <div style="font-size:13.5px;line-height:1.6;margin-bottom:7px">
               <span style="font-family:var(--font-mono);color:var(--accent-text);font-weight:700;margin-right:6px">${item.q_number}</span>
               ${U.esc(item.stem)}
