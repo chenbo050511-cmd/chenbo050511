@@ -168,6 +168,28 @@ function isStarted(p = 'p') {
                 OR ${q}first_seen_at IS NOT NULL))`;
 }
 
+/**
+ * 计入「正确率」的流水模式。
+ *
+ * 正确率**只反映第一次作答**：
+ *   card   翻卡的首答
+ *   quiz   测试作答（一次测试每个词只答一遍）
+ * 不计入的：
+ *   card_repeat  本轮里的重复作答（同一张卡反复考，计进去会把正确率稀释）
+ *   card_done    过关归档（只是归档动作，不是一次作答）
+ *
+ * 这个常量必须被**所有**统计正确率的地方共用。曾经：
+ *   · src/routes/stats.js 用 `mode IN ('card','quiz')`  → 94%
+ *   · src/routes/study.js 用「全部 logs」                → 96%
+ * 同一份数据、同一个库，两个页面显示两个正确率。
+ *
+ * @param {string} alias logs 表的别名，例如 'l'
+ */
+function accuracyModes(alias = '') {
+  const q = alias ? `${alias}.` : '';
+  return `(${q}mode IN ('card','quiz'))`;
+}
+
 /** 取某词当前进度（没有则构造一条初始的） */
 function getProgress(wordId) {
   return db.queryOne('SELECT * FROM progress WHERE word_id = ?', [wordId]) || {
@@ -274,6 +296,7 @@ module.exports = {
   isMistake,
   isUntouched,
   isStarted,
+  accuracyModes,
   loadBooks,
   streak,
 };

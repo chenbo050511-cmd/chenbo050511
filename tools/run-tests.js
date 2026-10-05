@@ -20,6 +20,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-tests-'));
 
 /** 不需要服务的纯本地检查 */
 const OFFLINE_TESTS = [
+  { name: '排期算法（三档跳档 / fuzz / 不许倒退）', args: ['tools/check-srs.js'] },
   { name: '前端静态检查（未定义引用 / 语法）', args: ['tools/check-frontend.js'] },
   { name: '迁移幂等性（恢复出厂设置后不二次迁移）', args: ['tools/check-migration.js'] },
 ];

@@ -121,8 +121,21 @@ async function main() {
   ok(sbk.due === bk.due,
     'stats/books.due == books.due（暂缓词不再多算一个）', `${sbk.due} vs ${bk.due}`);
 
-  /* ---------------- 6. 复习队列里的词确实都到期了 ---------------- */
-  console.log('\n6) 复习队列内容自洽');
+  /* ---------------- 6. 「正确率」口径必须唯一 ---------------- */
+  console.log('\n6) 正确率与练习次数：今日页 vs 统计页');
+  /*
+   * 这两处曾经各写各的：统计页 `mode IN ('card','quiz')`，今日页「全部 logs」，
+   * 于是同一份数据、同一个库，今日页显示 96%、统计页显示 94%。
+   */
+  ok(today.global.accuracy === overview.accuracy,
+    'today.accuracy == overview.accuracy',
+    `${today.global.accuracy}% vs ${overview.accuracy}%`);
+  ok(today.global.totalReviews === overview.totalReviews,
+    'today.totalReviews == overview.totalReviews',
+    `${today.global.totalReviews} vs ${overview.totalReviews}`);
+
+  /* ---------------- 7. 复习队列里的词确实都到期了 ---------------- */
+  console.log('\n7) 复习队列内容自洽');
   const now = Date.now();
   const notDue = planRev.queue.filter((x) => x.due_at && new Date(x.due_at).getTime() > now);
   ok(notDue.length === 0, '队列里没有「还没到期」的词', `异常 ${notDue.length} 个`);
@@ -130,14 +143,14 @@ async function main() {
   ok(suspendedInQueue.length === 0, '队列里没有已暂缓的词', `异常 ${suspendedInQueue.length} 个`);
 
   /* ---------------- 7. 阶段分布的档位数 == MAX_STAGE+1 ---------------- */
-  console.log('\n7) 阶段标签档位');
+  console.log('\n8) 阶段标签档位');
   ok(stages.labels.length === stages.maxStage + 1,
     '标签数 == maxStage+1（不再有多余的空档）',
     `${stages.labels.length} vs ${stages.maxStage + 1}`);
   ok(stages.items.length === stages.labels.length, 'items 数与 labels 一致');
 
   /* ---------------- 8. 词库 started 不超过 total ---------------- */
-  console.log('\n8) 词库统计合理性');
+  console.log('\n9) 词库统计合理性');
   for (const b of books) {
     ok(b.started <= b.total, `${b.code}: started(${b.started}) <= total(${b.total})`);
   }

@@ -5,7 +5,7 @@
 const express = require('express');
 const db = require('../db');
 const srs = require('../srs');
-const { wrap, int, dayStartIso, todayStr, saveProgress, logStudy, getProgress, loadBooks, streak, isMistake, isUntouched, isStarted } = require('../util');
+const { wrap, int, dayStartIso, todayStr, saveProgress, logStudy, getProgress, loadBooks, streak, isMistake, isUntouched, isStarted, accuracyModes } = require('../util');
 
 const router = express.Router();
 
@@ -130,12 +130,11 @@ function todayCounters(bookId) {
     [bookId, day]
   ).c;
 
-  // 正确率只统计「第一次作答」（card = 翻卡首答，quiz = 测试作答）。
-  // card_repeat（本轮重复）和 card_done（过关归档）都不计入，否则反复重来会拉高正确率
+  // 正确率只统计「第一次作答」，口径与统计页共用 accuracyModes()
   const right = db.queryOne(
     `SELECT COALESCE(SUM(l.correct),0) AS s, COUNT(*) AS c FROM logs l
        JOIN book_words bw ON bw.word_id = l.word_id AND bw.book_id = ?
-      WHERE l.day = ? AND l.mode IN ('card','quiz')`,
+      WHERE l.day = ? AND ${accuracyModes('l')}`,
     [bookId, day]
   );
   const seconds = db.queryOne('SELECT COALESCE(seconds,0) AS s FROM checkins WHERE day = ?', [day])?.s || 0;
@@ -506,9 +505,9 @@ router.get(
     ).c;
 
     /*
-     * 总览口径：`started` 必须用 isStarted() —— 只带标记的空行（给未学的词
-     * 写笔记/收藏/暂缓时建出来的）不算「学过」。否则它会和
-     * 「学习中 + 复习中 + 已掌握」三个桶对不上（实测差 1，正是这种幽灵行）。
+     * totalReviews / rightReviews 必须和统计页用**同一口径**（只算第一次作答）。
+     * 这里原来是「全部 logs」，把 card_repeat（本轮重复）和 card_done（过关归档）
+     * 也算进去了，而统计页只算 card+quiz —— 同一份数据，今日页 96%、统计页 94%。
      */
     const global = db.queryOne(`
       SELECT (SELECT COUNT(*) FROM progress p WHERE ${isStarted('p')}) AS started,
@@ -518,8 +517,8 @@ router.get(
              (SELECT COUNT(*) FROM progress p WHERE ${isMistake('p')}) AS wrongWords,
              (SELECT COUNT(*) FROM progress p WHERE COALESCE(p.suspended,0) = 1 AND ${isStarted('p')}) AS suspendedWords,
              (SELECT COUNT(*) FROM words) AS total,
-             (SELECT COUNT(*) FROM logs) AS totalReviews,
-             (SELECT COALESCE(SUM(correct),0) FROM logs) AS rightReviews,
+             (SELECT COUNT(*) FROM logs l WHERE ${accuracyModes('l')}) AS totalReviews,
+             (SELECT COALESCE(SUM(l.correct),0) FROM logs l WHERE ${accuracyModes('l')}) AS rightReviews,
              (SELECT COUNT(*) FROM checkins WHERE learned > 0) AS studyDays,
              (SELECT COALESCE(SUM(seconds),0) FROM checkins) AS seconds
     `);

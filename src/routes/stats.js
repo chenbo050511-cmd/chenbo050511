@@ -5,7 +5,7 @@
 const express = require('express');
 const db = require('../db');
 const srs = require('../srs');
-const { wrap, int, dayStr, streak, isMistake, isUntouched, isStarted } = require('../util');
+const { wrap, int, dayStr, streak, isMistake, isUntouched, isStarted, accuracyModes } = require('../util');
 
 const router = express.Router();
 
@@ -33,14 +33,18 @@ router.get(
         (SELECT COUNT(*) FROM progress p WHERE ${isMistake('p')} AND ${isStarted('p')}) AS wrong_words
     `, [now]);
 
-    // 正确率只统计第一次作答（card = 翻卡首答，quiz = 测试）。
-    // card_repeat（本轮重复）与 card_done（过关归档）不计入，否则反复重来会把正确率拉高
+    /*
+     * 正确率只统计第一次作答（card = 翻卡首答，quiz = 测试）。
+     * card_repeat（本轮重复）与 card_done（过关归档）都不计入，否则反复重来会把正确率拉高。
+     * 口径判定用 util.js 的 accuracyModes()，和「今日」页共用同一个常量 ——
+     * 以前这两处各写各的，同一份数据显示 94% / 96% 两个数。
+     */
     const agg = db.queryOne(`
       SELECT COUNT(*) AS reviews,
              COALESCE(SUM(correct),0) AS right,
              COALESCE(SUM(CASE WHEN correct = 0 THEN 1 ELSE 0 END),0) AS wrong
-        FROM logs
-       WHERE mode IN ('card','quiz')
+        FROM logs l
+       WHERE ${accuracyModes('l')}
     `);
 
     const studyDays = db.queryOne('SELECT COUNT(*) AS c FROM checkins WHERE learned > 0').c;
