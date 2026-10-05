@@ -1,0 +1,19 @@
+{
+  "name": "wordmaster",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WordMaster —— 本地背单词应用（四六级 / 考研，艾宾浩斯复习排期）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build:dict": "node tools/build-dict.js",
+    "check": "node tools/check-frontend.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

@@ -1,0 +1,29 @@
+# 行尾规则 —— 显式写死，不依赖每个人本地的 core.autocrlf
+#
+# 为什么必须显式指定：
+#  1. start.bat **必须**是 CRLF。用 LF 保存的话，双击会出现「窗口一闪而过」
+#     或行为异常（README 里专门记过这个坑）。Git 在某些配置下会把它转成 LF，
+#     所以这里把它钉死成 CRLF。
+#  2. 其余源码统一 LF，避免同一份文件在不同机器上反复出现整文件 diff。
+
+# 默认：仓库里存 LF
+* text=auto eol=lf
+
+# 批处理必须是 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件：不要做任何换行转换
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.db binary
+*.zip binary
+
+# 这些文件在 diff 里不要当文本统计
+package-lock.json -diff linguist-generated
