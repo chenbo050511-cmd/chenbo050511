@@ -561,12 +561,19 @@ python tools/check-paragraphs.py              # 分段质量自检（不变量�
 > python tools/clean-exam-text.py --write # 2. 清洗粘连 + 剥试卷名
 > node tools/import-explanations.js       # 3. 导入解析（约 741 条）
 > python tools/extract-paragraphs.py --write  # 4. 从 PDF 还原阅读分段（需 pdfplumber）
-> node tools/repair-exam-text.js --write      # 5. 修孤立的乱入大写字母
+> node tools/repair-exam-text.js --write      # 5. 修乱入大写 / 丢词边界（**必须是最后一步**）
 > ```
+>
+> ⚠️ **第 5 步必须放最后**：它写的是 `exam_sets.passage` / `exam_paragraphs.text` 等列，
+> 而第 2 步 `clean-exam-text.py` **会整列重写这些文本** —— 顺序反了或漏跑第 5 步，
+> 修复就会被静默覆盖，且没有任何报错。
+> `tools/run-tests.js` 里有一条 `repair-exam-text.js --check` 就是用来抓这种倒退的；
+> 也可以随时手动跑它确认（未修好会以退出码 1 报出具体是哪几处）。
 >
 > **重建会永久删除** `exam_attempts` / `exam_answers`（你的做题记录），
 > 因为它们的外键指向 `exam_sets.id`，而重建后 id 会重排。
 > 题库文本与你自己的单词学习进度**互不影响**（那在 `progress` 表里）。
+> 想留个念想就先导出：`data/exam-records-before-rebuild.csv` 就是这么来的。
 >
 > 重建后**务必核对这几个数字**，不对就说明某一步漏了或用了旧代码：
 >
@@ -576,9 +583,28 @@ python tools/check-paragraphs.py              # 分段质量自检（不变量�
 > | 有解析的题 | 741 |
 > | 阅读分段 | 598（87 组拿到真实分段） |
 > | 句首丢 `T` 的组数 | **0**（这条最关键，非 0 就是又用旧代码构建了） |
+> | `repair-exam-text.js --check` | **通过**（退化为 0） |
 >
-> 重建后另需 `npm i -D pdfplumber`（Python 侧）才能跑第 4 步；
+> 重建后另需 `pip install pdfplumber` 才能跑第 4 步；
 > 它只是**开发工具链**依赖，不进运行时、不进部署包。
+
+> ### ⚠️ 备份必须带上 `-wal` 和 `-shm`
+>
+> 数据库跑在 WAL 模式下，**最近的写入可能还留在 `-wal` 文件里**，
+> 没有合并进主库文件。所以：
+>
+> ```bash
+> cp data/wordmaster.db* /d/tmp/backup/     # 对：三个文件一起
+> cp data/wordmaster.db   /d/tmp/backup/    # 错：可能拿到旧数据
+> ```
+>
+> **实测踩过**：修完 31 处真题文本后只复制主库文件做备份，
+> 副本里那些修复「不存在」—— 它们还在 WAL 里（226 KB）。
+> 反过来更危险：以为备份保住了某个状态，实际没有。
+>
+> 代码里的备份点统一走 `src/dbsnapshot.js`：先 `wal_checkpoint(TRUNCATE)`
+> 把 WAL 合并进主库，然后**仍然三个文件一起复制**（因为服务可能在跑，
+> 删 `-wal`/`-shm` 有损坏风险，备份工具不该冒这个险）。
 
 ### 真题库是怎么来的
 

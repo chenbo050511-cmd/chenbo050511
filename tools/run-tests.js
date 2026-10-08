@@ -24,6 +24,9 @@ const OFFLINE_TESTS = [
   { name: '颜色令牌守卫（禁止绕过设计系统的硬编码）', args: ['tools/check-colors.js'] },
   { name: '前端静态检查（未定义引用 / 语法）', args: ['tools/check-frontend.js'] },
   { name: '迁移幂等性（恢复出厂设置后不二次迁移）', args: ['tools/check-migration.js'] },
+  /* 重建流水线的最后一步必须跑到位 —— 重跑 clean-exam-text.py 会覆盖它的修复。
+     这个 check 就是用来抓「流水线跑了一半」的。 */
+  { name: '真题文本修复已应用（流水线最后一步没漏）', args: ['tools/repair-exam-text.js', '--check'] },
 ];
 
 /** 需要服务的检查 */

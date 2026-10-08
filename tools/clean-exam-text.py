@@ -454,10 +454,26 @@ def main():
         print(f'（预演模式，未写库。共 {len(changes)} 条待改，加 --write 才会写入）')
         return
 
-    # 写库前备份数据库
+    # 写库前备份。
+    # 注意用的是 WAL 感知快照，不是裸 copyfile —— 数据库跑在 WAL 模式下，
+    # 最近的写入可能还留在 -wal 文件里，只复制主库文件会拿到**旧数据**。
+    # （实测踩过：修完 31 处文本后只复制主库文件，副本里那些修复"不存在"。）
+    #
+    # 本进程此刻持有数据库连接，wal_checkpoint 可能拿不到独占锁，
+    # 那种情况下快照会退化为「db + -wal + -shm 三文件一起复制」，同样完整。
+    import sys as _sys
+    import os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    try:
+        db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    except Exception:
+        pass
     import shutil
     shutil.copyfile(DB, DB + '.before-clean')
-    print(f'  已备份到 {DB}.before-clean')
+    for _s in ('-wal', '-shm'):
+        if _os.path.exists(DB + _s):
+            shutil.copyfile(DB + _s, DB + '.before-clean' + _s)
+    print(f'  已备份到 {DB}.before-clean（含 -wal/-shm）')
 
     db.execute('BEGIN')
     for table, rid, before, after, label in changes:
